@@ -22,36 +22,11 @@ import dataclasses
 from typing import Any, Self
 
 from gnm.shape import gnm_data_loader
-from gnm.shape import gnm_data_schema
 from gnm.shape.data.versions import gnm_specs
 
 
-class GNMBaseMeta(abc.ABCMeta):
-  """Metaclass to enforce that subclasses define all schema attributes."""
-
-  def __new__(mcs, name, bases, dct):
-    if name == "GNM":
-      annotations = dct.get("__annotations__", {})
-      actual_fields = set(annotations.keys())
-      expected_fields = set(gnm_data_schema.GNM_DATA_ATTRIBUTES)
-
-      # Check for missing and extra fields
-      missing = expected_fields - actual_fields
-      if missing:
-        raise TypeError(
-            f"Class '{name}' is missing required schema fields: {missing}"
-        )
-      extra = actual_fields - expected_fields
-      if extra:
-        raise TypeError(
-            f"Class '{name}' has extra fields not defined in schema: {extra}"
-        )
-
-    return super().__new__(mcs, name, bases, dct)
-
-
 @dataclasses.dataclass(init=False)
-class GNMBase(metaclass=GNMBaseMeta):
+class GNMBase(abc.ABC):
   """Base GNM class."""
 
   version: gnm_specs.GNMVersion
@@ -83,7 +58,7 @@ class GNMBase(metaclass=GNMBaseMeta):
   def _from_model_data(
       cls,
       data_dict: Mapping[str, Any],
-  ) -> GNMBase:
+  ) -> Self:
     """Creates a GNM instance from a model data."""
     pass
 

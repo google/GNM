@@ -122,19 +122,19 @@ class GNMUtilsConversionTest(BaseGNMUtilsTest):
     # preserved. If `to_gnm` does not contain some components of `from_gnm`
     # (despite having a larger overall dimension), those components are dropped
     # and their reconstructed value is 0.
-    from_inds, _ = gnm_utils._get_corresponding_inds(
+    from_indices, _ = gnm_utils._get_corresponding_indices(
         basis_type, from_gnm, to_gnm
     )
 
     # The values mapped to the target basis should be fully reconstructed
     np.testing.assert_allclose(
-        from_coeffs[from_inds], reconstructed[from_inds], atol=1e-5
+        from_coeffs[from_indices], reconstructed[from_indices], atol=1e-5
     )
 
     # The values not mapped to the target basis are expected to be zeroed out
     unmapped_mask = np.ones(from_dim, dtype=bool)
-    if from_inds.size > 0:
-      unmapped_mask[from_inds] = False
+    if from_indices.size > 0:
+      unmapped_mask[from_indices] = False
     np.testing.assert_allclose(reconstructed[unmapped_mask], 0.0, atol=1e-5)
 
   @parameterized.product(
@@ -490,8 +490,8 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
     # Manually compute the region sigmas.
     regions = gnm_utils.region_expression_components(gnm)
     components = regions[region_name]
-    vertex_inds = gnm.vertex_group_indices(vertex_group_name)
-    groups = components[:, vertex_inds]
+    vertex_indices = gnm.vertex_group_indices(vertex_group_name)
+    groups = components[:, vertex_indices]
     expected_region_sigmas = np.sqrt(np.sum(np.square(groups), axis=(1, 2)))
 
     # Compare.

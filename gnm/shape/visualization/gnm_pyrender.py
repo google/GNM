@@ -132,7 +132,7 @@ def render(
   def _create_texture(frame: int, part: str) -> pyrender.Texture:
     return pyrender.Texture(source=texture[part][frame], source_channels='RGB')
 
-  def _create_mesh(frame: int, gnm_idx: int) -> pyrender.Mesh:
+  def _create_mesh(frame: int, gnm_index: int) -> pyrender.Mesh:
     """Set-up GNM mesh and texture."""
     primitives = []
     for part in part_names:
@@ -142,20 +142,22 @@ def render(
       )
       primitives.append(
           pyrender.Primitive(
-              positions=vertices[frame, gnm_idx],
+              positions=vertices[frame, gnm_index],
               indices=triangles[part],
-              normals=vertex_normals[frame, gnm_idx],
+              normals=vertex_normals[frame, gnm_index],
               texcoord_0=vertex_uvs,
-              color_0=vertex_colors[frame, gnm_idx],
+              color_0=vertex_colors[frame, gnm_index],
               material=material,
           )
       )
     return pyrender.Mesh(primitives=primitives)
 
   def _apply_texture(
-      mesh_node: pyrender.Node, texture: pyrender.Texture | None, part_idx: int
+      mesh_node: pyrender.Node,
+      texture: pyrender.Texture | None,
+      part_index: int,
   ):
-    material = mesh_node.mesh.primitives[part_idx].material
+    material = mesh_node.mesh.primitives[part_index].material
     material.baseColorTexture = texture
 
   # Create a mesh per GNM.
@@ -202,16 +204,16 @@ def render(
         if mesh_nodes[m] is not None:
           scene.remove_node(mesh_nodes[m])
         mesh_nodes[m] = scene.add(mesh)
-        for idx in range(len(part_names)):
-          _apply_texture(mesh_nodes[m], texture_objects.get(idx, None), idx)
+        for index in range(len(part_names)):
+          _apply_texture(mesh_nodes[m], texture_objects.get(index, None), index)
 
-    for idx, part in enumerate(part_names):
+    for index, part in enumerate(part_names):
       if texture_changed[part][f]:
-        texture_objects[idx] = _create_texture(f, part)
+        texture_objects[index] = _create_texture(f, part)
         for m in range(num_meshes):
           mesh_node = mesh_nodes[m]
           if mesh_node is not None:
-            _apply_texture(mesh_node, texture_objects[idx], idx)
+            _apply_texture(mesh_node, texture_objects[index], index)
 
     if world_to_camera_changed[f]:
       camera_to_world = np.linalg.inv(world_to_camera[f])

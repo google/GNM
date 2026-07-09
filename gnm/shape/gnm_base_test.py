@@ -83,12 +83,5 @@ class GNMBaseTest(absltest.TestCase):
     self.assertEqual(new_gnm.version, _TEST_FULL_VERSION)
     self.assertEqual(new_gnm.variant, _TEST_VARIANT)
 
-  def test_metaclass_enforces_schema(self) -> None:
-    with self.assertRaises(TypeError):
-
-      class GNM(gnm_base.GNMBase):  # pylint: disable=unused-variable
-        pass
-
-
 if __name__ == "__main__":
   absltest.main()

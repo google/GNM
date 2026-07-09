@@ -280,9 +280,7 @@ class GNMPytorchTest(parameterized.TestCase):
         gnm_pytorch.GNMVariant(variant_str),
     )
 
-    keep_vertices = np.random.choice(
-        np.arange(gnm_pruned.num_vertices), 100, replace=False
-    )
+    keep_vertices = gnm_np.quads[0]
     gnm_pruned.prune_vertices(keep_vertices)
 
     # Build a batch of random parameters.
@@ -296,8 +294,8 @@ class GNMPytorchTest(parameterized.TestCase):
     vertices_pruned = gnm_pruned(**gnm_torch_parameters)
 
     self.assertLen(keep_vertices, gnm_pruned.num_vertices)
-    self.assertEqual(gnm_pruned.quads.shape, (0, 4))
-    self.assertEqual(gnm_pruned.triangles.shape, (0, 3))
+    self.assertEqual(gnm_pruned.quads.shape, (1, 4))
+    self.assertEqual(gnm_pruned.triangles.shape, (2, 3))
     torch.testing.assert_close(vertices_pruned, vertices_gathered)
 
   @parameterized.product(

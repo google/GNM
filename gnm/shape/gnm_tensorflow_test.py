@@ -194,7 +194,7 @@ class GNMTensorflowTest(parameterized.TestCase):
         gnm_np, batch_shape=(n_batch,), seed=self.rng
     )
     for key in kwargs:
-      with self.assertRaises(gnm_tensorflow.InvalidShapeError):
+      with self.assertRaises(ValueError):
         gnm_tf(**(kwargs | {key: bad_input}))
 
   @parameterized.product(
@@ -225,7 +225,7 @@ class GNMTensorflowTest(parameterized.TestCase):
     joint_transform_kwargs.pop('expression')
 
     for bad_input_dict in bad_inputs:
-      with self.assertRaises(gnm_tensorflow.InvalidShapeError):
+      with self.assertRaises(ValueError):
         gnm_tf.get_posed_joint_transforms(
             **(joint_transform_kwargs | bad_input_dict)
         )

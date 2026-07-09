@@ -17,7 +17,7 @@ permissions:
 # Concurrency group ensures that only one workflow run per branch/PR is active at a time.
 # If a new commit is pushed, any running job for that PR/branch is cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ci-windows-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
