@@ -112,16 +112,16 @@ class ChangedFlagTest(absltest.TestCase):
 
   def test_changed_flag(self):
     num_frames = 25
-    idxs_to_change = np.array([10, 16, 21])
+    indices_to_change = np.array([10, 16, 21])
 
     expected_flags = np.zeros(num_frames, dtype=np.bool_)
     expected_flags[0] = True
-    expected_flags[idxs_to_change] = True
-    expected_flags[idxs_to_change + 1] = True
+    expected_flags[indices_to_change] = True
+    expected_flags[indices_to_change + 1] = True
 
     array = np.zeros((num_frames, 100, 100, 3), dtype=np.float32)
-    for idx in idxs_to_change:
-      array[idx, 0, 0] = 1.0
+    for index in indices_to_change:
+      array[index, 0, 0] = 1.0
 
     np.testing.assert_array_equal(
         gnm_pyrender._changed_flag(array), expected_flags

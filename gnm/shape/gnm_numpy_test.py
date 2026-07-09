@@ -642,11 +642,11 @@ class GNMNumpyTest(parameterized.TestCase):
     group_indices = gnm_np.vertex_group_indices(group)
     side_group_indices = np.intersect1d(side_indices, group_indices)
     vertices = gnm_np.template_vertex_positions[:, axis]
-    min_idx = side_group_indices[np.argmin(vertices[side_group_indices])]
-    max_idx = side_group_indices[np.argmax(vertices[side_group_indices])]
-    self.assertGreater(vertices[max_idx], vertices[min_idx])
+    min_index = side_group_indices[np.argmin(vertices[side_group_indices])]
+    max_index = side_group_indices[np.argmax(vertices[side_group_indices])]
+    self.assertGreater(vertices[max_index], vertices[min_index])
     uvs = gnm_np.vertex_uvs[:, axis]
-    self.assertGreater(uvs[max_idx], uvs[min_idx])
+    self.assertGreater(uvs[max_index], uvs[min_index])
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,

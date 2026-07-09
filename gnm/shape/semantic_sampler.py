@@ -208,19 +208,19 @@ class ExpressionSampler:
     if np.isclose(total_weight, 0):
       raise ValueError('Sum of class_weights cannot be 0.')
     normalized_weights = {
-        idx: weight / total_weight for idx, weight in class_weights.items()
+        index: weight / total_weight for index, weight in class_weights.items()
     }
 
     blended_latent_vector = np.zeros((1, self._latent_dim), dtype='float32')
     blended_one_hot_label = np.zeros((1, self._num_classes), dtype='float32')
 
     rng = _get_rng(rng)
-    for class_idx, weight in normalized_weights.items():
+    for class_index, weight in normalized_weights.items():
 
       # Sample a single latent vector for each class
       z_sample = rng.normal(size=(1, self._latent_dim)).astype('float32')
       class_one_hot = tf.keras.utils.to_categorical(
-          [class_idx], num_classes=self._num_classes
+          [class_index], num_classes=self._num_classes
       ).astype('float32')
 
       # Accumulate weighted latent vectors and one-hot labels
@@ -275,7 +275,7 @@ class ExpressionSampler:
       )
 
       # Assign random weights
-      weights = {Expression(idx): rng.random() for idx in chosen_classes}
+      weights = {Expression(index): rng.random() for index in chosen_classes}
 
       # Blend
       vec = self.blend_expressions(weights, rng=rng)
@@ -455,8 +455,8 @@ class IdentitySampler:
     if np.isclose(total_gender_weight, 0):
       raise ValueError('Sum of gender_weights cannot be 0.')
     normalized_gender_weights = {
-        idx: weight / total_gender_weight
-        for idx, weight in gender_weights.items()
+        index: weight / total_gender_weight
+        for index, weight in gender_weights.items()
     }
 
     # Normalize ethnicity weights
@@ -464,25 +464,25 @@ class IdentitySampler:
     if np.isclose(total_ethnicity_weight, 0):
       raise ValueError('Sum of ethnicity_weights cannot be 0.')
     normalized_ethnicity_weights = {
-        idx: weight / total_ethnicity_weight
-        for idx, weight in ethnicity_weights.items()
+        index: weight / total_ethnicity_weight
+        for index, weight in ethnicity_weights.items()
     }
 
     blended_gender_ohe = np.zeros(
         (1, self._NUM_GENDER_CLASSES), dtype='float32'
     )
-    for class_idx, weight in normalized_gender_weights.items():
+    for class_index, weight in normalized_gender_weights.items():
       gender_one_hot = tf.keras.utils.to_categorical(
-          [class_idx], num_classes=self._NUM_GENDER_CLASSES
+          [class_index], num_classes=self._NUM_GENDER_CLASSES
       ).astype('float32')
       blended_gender_ohe += gender_one_hot * weight
 
     blended_ethnicity_ohe = np.zeros(
         (1, self._NUM_ETHNICITIES_CLASSES), dtype='float32'
     )
-    for class_idx, weight in normalized_ethnicity_weights.items():
+    for class_index, weight in normalized_ethnicity_weights.items():
       ethnicity_one_hot = tf.keras.utils.to_categorical(
-          [class_idx], num_classes=self._NUM_ETHNICITIES_CLASSES
+          [class_index], num_classes=self._NUM_ETHNICITIES_CLASSES
       ).astype('float32')
       blended_ethnicity_ohe += ethnicity_one_hot * weight
 
