@@ -111,7 +111,7 @@ def get_gnm_attribute(gnm: gnm_numpy.GNM, attribute: str) -> Any:
   return data
 
 
-def _get_corresponding_inds(
+def _get_corresponding_indices(
     basis_type: BasisType,
     from_gnm: gnm_numpy.GNM,
     to_gnm: gnm_numpy.GNM,
@@ -127,8 +127,8 @@ def _get_corresponding_inds(
   if not (from_names_unique and to_names_unique):
     raise ValueError('Names must be unique.')
 
-  from_inds, to_inds = np.where(from_names[:, None] == to_names[None])
-  return from_inds.astype(np.int32), to_inds.astype(np.int32)
+  from_indices, to_indices = np.where(from_names[:, None] == to_names[None])
+  return from_indices.astype(np.int32), to_indices.astype(np.int32)
 
 
 def components_names(
@@ -142,22 +142,22 @@ def components_names(
 def region_names_from_components_names(names: Sequence[str]) -> Sequence[str]:
   """Returns the names of the basis regions keeping the components order."""
   regions_names = ['_'.join(n.split('_')[:-1]) for n in names]
-  _, inds = np.unique(regions_names, return_index=True)
-  return [regions_names[i] for i in np.sort(inds)]
+  _, indices = np.unique(regions_names, return_index=True)
+  return [regions_names[i] for i in np.sort(indices)]
 
 
-def region_to_component_inds_map(
+def region_to_component_indices_map(
     basis_type: BasisType, gnm: gnm_numpy.GNM
 ) -> Mapping[str, np.ndarray]:
   """Return a map from basis region name to component indices."""
   names = components_names(basis_type, gnm)
   region_names = region_names_from_components_names(names)
 
-  region_inds_map = {}
+  region_indices_map = {}
   for r in region_names:
-    inds = [index for index, name in enumerate(names) if name.startswith(r)]
-    region_inds_map[r] = np.array(inds, dtype=np.int32)
-  return region_inds_map
+    indices = [index for index, name in enumerate(names) if name.startswith(r)]
+    region_indices_map[r] = np.array(indices, dtype=np.int32)
+  return region_indices_map
 
 
 def convert_coefficients(
@@ -196,13 +196,13 @@ def convert_coefficients(
         f'Dimension mismatch: {coefficients.shape[-1]} vs {from_dim}.'
     )
 
-  to_inds, from_inds = _get_corresponding_inds(
+  to_indices, from_indices = _get_corresponding_indices(
       basis_type, from_gnm=to_gnm, to_gnm=from_gnm
   )
 
   # Convert.
   converted = np.zeros(batch_shape + (to_dim,), dtype=coefficients.dtype)
-  converted[..., to_inds] = coefficients[..., from_inds]
+  converted[..., to_indices] = coefficients[..., from_indices]
   return converted
 
 
@@ -220,8 +220,10 @@ def _coefficients_to_regions(
         f' version {gnm.version} and variant {gnm.variant}.'
     )
 
-  region_inds = region_to_component_inds_map(basis_type, gnm)
-  regions = {r: coefficients[..., inds] for r, inds in region_inds.items()}
+  region_indices = region_to_component_indices_map(basis_type, gnm)
+  regions = {
+      r: coefficients[..., indices] for r, indices in region_indices.items()
+  }
   for region_name, region_coefficients in regions.items():
     assert region_coefficients.base is None or (
         region_coefficients.base is not coefficients
@@ -246,7 +248,7 @@ def _regions_to_coefficients(
   if not regions:
     return np.zeros((coeffs_dim,), dtype=np.float32)
 
-  region_inds = region_to_component_inds_map(basis_type, gnm)
+  region_indices = region_to_component_indices_map(basis_type, gnm)
 
   tmp_region_name = list(regions.keys())[0]
   batch_shape = regions[tmp_region_name].shape[:-1]
@@ -254,11 +256,11 @@ def _regions_to_coefficients(
 
   coeffs = np.zeros(batch_shape + (coeffs_dim,), dtype=dtype)
   for region_name, values in regions.items():
-    if region_name not in region_inds:
+    if region_name not in region_indices:
       gnm_type_name = getattr(gnm, 'model_type', 'unknown')
       raise ValueError(f'No region {region_name} in model {gnm_type_name}.')
     else:
-      coeffs[..., region_inds[region_name]] = values
+      coeffs[..., region_indices[region_name]] = values
 
   return coeffs
 
@@ -270,8 +272,8 @@ def _region_components(
   validate_gnm(gnm)
   attribute_name = _BASIS_BASIS_ATTRIBUTE_MAP[basis_type]
   basis = get_gnm_attribute(gnm, attribute_name)
-  region_inds = region_to_component_inds_map(basis_type, gnm)
-  return {r: basis[inds] for r, inds in region_inds.items()}
+  region_indices = region_to_component_indices_map(basis_type, gnm)
+  return {r: basis[indices] for r, indices in region_indices.items()}
 
 
 def compute_scaling_for_basis(
@@ -355,7 +357,7 @@ def expression_regions_indices(
 ) -> dict[str, np.ndarray]:
   """Returns mapping from region name to expression component indices."""
   validate_gnm(gnm)
-  return dict(region_to_component_inds_map(BasisType.EXPRESSION, gnm))
+  return dict(region_to_component_indices_map(BasisType.EXPRESSION, gnm))
 
 
 def identity_regions_indices(
@@ -363,7 +365,7 @@ def identity_regions_indices(
 ) -> dict[str, np.ndarray]:
   """Returns mapping from region name to identity component indices."""
   validate_gnm(gnm)
-  return dict(region_to_component_inds_map(BasisType.IDENTITY, gnm))
+  return dict(region_to_component_indices_map(BasisType.IDENTITY, gnm))
 
 
 def identity_dim(gnm: gnm_numpy.GNM) -> int:
@@ -381,15 +383,15 @@ def expression_dim(gnm: gnm_numpy.GNM) -> int:
 def expression_regions_dims(gnm: gnm_numpy.GNM) -> dict[str, int]:
   """Returns mapping from region name to expression component dimension."""
   validate_gnm(gnm)
-  region_inds = region_to_component_inds_map(BasisType.EXPRESSION, gnm)
-  return {k: v.size for k, v in region_inds.items()}
+  region_indices = region_to_component_indices_map(BasisType.EXPRESSION, gnm)
+  return {k: v.size for k, v in region_indices.items()}
 
 
 def identity_regions_dims(gnm: gnm_numpy.GNM) -> dict[str, int]:
   """Returns mapping from region name to identity component dimension."""
   validate_gnm(gnm)
-  region_inds = region_to_component_inds_map(BasisType.IDENTITY, gnm)
-  return {k: v.size for k, v in region_inds.items()}
+  region_indices = region_to_component_indices_map(BasisType.IDENTITY, gnm)
+  return {k: v.size for k, v in region_indices.items()}
 
 
 def joint_rotations_to_regions(
@@ -477,8 +479,8 @@ def _sigmas(basis_type: BasisType, gnm: gnm_numpy.GNM) -> np.ndarray:
   region_group = _BASIS_REGION_VERTEX_GROUP_MAP[basis_type]
   regions = {}
   for name, components in _region_components(basis_type, gnm).items():
-    vert_inds = gnm.vertex_group_indices(*region_group[name])
-    regions[name] = np.linalg.norm(components[:, vert_inds], axis=(1, 2))
+    vertex_indices = gnm.vertex_group_indices(*region_group[name])
+    regions[name] = np.linalg.norm(components[:, vertex_indices], axis=(1, 2))
   region_sigmas = _regions_to_coefficients(regions, basis_type, gnm)
 
   # Treat tongue mean in expressions individually, it is not a real component.

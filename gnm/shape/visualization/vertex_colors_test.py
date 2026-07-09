@@ -53,10 +53,7 @@ class VertexColorsTest(parameterized.TestCase):
     """Tests we can get per-vertex colors."""
     if variant not in self.models[version]:
       variant_name = variant.value if hasattr(variant, 'value') else variant
-      self.skipTest(
-          f'variant {variant_name}'
-          f' not supported in {version}.'
-      )
+      self.skipTest(f'variant {variant_name} not supported in {version}.')
     gnm_np = self.models[version][variant]
     colors = vertex_colors.get_vertex_colors(gnm_np)
 
@@ -70,10 +67,7 @@ class VertexColorsTest(parameterized.TestCase):
   def test_gets_inner_head_colors(self, version, variant):
     if variant not in self.models[version]:
       variant_name = variant.value if hasattr(variant, 'value') else variant
-      self.skipTest(
-          f'variant {variant_name}'
-          f' not supported in {version}.'
-      )
+      self.skipTest(f'variant {variant_name} not supported in {version}.')
     gnm_np = self.models[version][variant]
     colors = vertex_colors.get_vertex_colors_for_inner_head(gnm_np)
     groups = [['mouth_sock'], ['upper_teeth'], ['lower_teeth', 'tongue']]
@@ -84,8 +78,8 @@ class VertexColorsTest(parameterized.TestCase):
     # Check that the colors in each interst group are the same.
     with self.subTest('Same color in each group'):
       for group in groups:
-        inds = gnm_np.vertex_group_indices(*group)
-        self.assertTrue(np.all(colors[inds] == colors[inds[0]]))
+        indices = gnm_np.vertex_group_indices(*group)
+        self.assertTrue(np.all(colors[indices] == colors[indices[0]]))
 
     # Check that each group has a different color.
     with self.subTest('Different colors across groups'):
