@@ -454,18 +454,18 @@ def get_look_at_world_to_camera(
     # If there is no batch dimension, we don't need to share the camera.
     share_camera = False
 
-  _adjust_scalar_shape(azimuthal_angle, batch_dims)
-  _adjust_scalar_shape(polar_angle, batch_dims)
-  _adjust_scalar_shape(camera_distance, batch_dims)
-  _adjust_scalar_shape(share_camera, batch_dims)
-  _adjust_scalar_shape(y_up, batch_dims)
+  azimuthal_angle = _adjust_scalar_shape(azimuthal_angle, batch_dims)
+  polar_angle = _adjust_scalar_shape(polar_angle, batch_dims)
+  camera_distance = _adjust_scalar_shape(camera_distance, batch_dims)
+  share_camera = _adjust_scalar_shape(share_camera, batch_dims)
+  y_up = _adjust_scalar_shape(y_up, batch_dims)
 
   first_frame_vertices = np.broadcast_to(
       vertices_world[:1], vertices_world.shape
   )
 
   vertices_for_camera = np.where(
-      share_camera, first_frame_vertices, vertices_world
+      share_camera[..., None], first_frame_vertices, vertices_world
   )
 
   gnm_axes = _get_gnm_axes(
@@ -524,8 +524,8 @@ def get_fill_factor_camera_to_image(
     The camera-to-image matrix, (..., 4, 4).
   """
   batch_dims = vertices.shape[:-2]
-  _adjust_scalar_shape(target_fill_factor, batch_dims)
-  _adjust_scalar_shape(camera_distance, batch_dims)
+  target_fill_factor = _adjust_scalar_shape(target_fill_factor, batch_dims)
+  camera_distance = _adjust_scalar_shape(camera_distance, batch_dims)
 
   width, height = image_size
 
