@@ -40,7 +40,7 @@ gnm/shape/
 ├── fitting_utils/          # Shared optimization helper functions
 ├── visualization/          # Rendering and camera projection utilities
 ├── gnm_base.py             # Base GNM class definitions
-├── gnm_colab_viewer.py     # Colab 3D face model visualization tool
+├── gnm_jupyter_viewer.py   # Jupyter 3D face model visualization tool
 ├── gnm_data_loader.py      # Dynamic model loaders and checkers
 ├── gnm_data_schema.py      # Input/output data validation schemas
 ├── gnm_jax.py              # JAX implementation of GNM
@@ -101,7 +101,7 @@ cd gnm/gnm/shape
 
 ### Loading the GNM Model
 
-The core model can be loaded as follows. The necessary model data (`gnm.npz`)
+The core model can be loaded as follows. The necessary model data (`gnm_head.npz`)
 is included in this repository.
 
 ```python

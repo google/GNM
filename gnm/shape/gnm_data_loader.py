@@ -14,7 +14,6 @@
 
 """GNM data loader."""
 
-# from collections.abc import Mapping, Sequence
 from collections.abc import Sequence
 import functools
 from typing import Any
@@ -215,7 +214,7 @@ def _populate_legacy_vertex_group_aliases(data: dict[str, Any]) -> None:
   extra_group_names = []
   extra_group_weights = []
 
-  # Mapping to retrieve new vertex group name by combinating legacy ones.
+  # Mapping to retrieve new vertex group name by combining legacy ones.
   # Note that this list is not exhaustive, and mostly here to support the
   # standard API calls in third_party/py/gnm.
   vertex_group_mappings = {
