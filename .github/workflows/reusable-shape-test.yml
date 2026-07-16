@@ -1,0 +1,43 @@
+name: Run Shape Tests Template
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      python-version:
+        required: false
+        type: string
+        default: "3.13"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: bash -e {0}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        with:
+          lfs: true # Ensure Git LFS assets (like model files/weights) are fully downloaded
+
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: "pip"
+
+      - name: Install gnm-shape package (Editable Mode with all framework extras and dev dependencies)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./gnm/shape[all,dev]"
+
+      - name: Run unit tests
+        run: |
+          python gnm/shape/run_all_tests.py
