@@ -1,0 +1,37 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'gnm/shape/**'
+      - 'copy.bara.sky'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'gnm/shape/**'
+      - 'copy.bara.sky'
+      - '.github/workflows/**'
+  schedule:
+    # Run weekly on Sundays at 00:00 UTC to catch regressions caused by upstream dependency updates
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+# Restrict default permissions of GITHUB_TOKEN to read-only for repository contents.
+permissions:
+  contents: read
+
+# Concurrency group ensures that only one workflow run per branch/PR is active at a time.
+# If a new commit is pushed, any running job for that PR/branch is cancelled.
+concurrency:
+  group: ci-windows-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows
+    uses: ./.github/workflows/reusable-shape-test.yml
+    with:
+      os: windows-latest
+      python-version: "3.13"
