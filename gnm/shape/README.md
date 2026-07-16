@@ -152,6 +152,24 @@ expression, joint rotations and global translation, please see
 
 ![sampling](assets/readme/gnm_head_demo.gif)
 
+### Texturing the Mesh
+
+The model ships with UV texture coordinates and a default texture
+(`data/textures/edgeflow_bw_4k.png`). GNM exposes UVs in three forms:
+
+*   `gnm.triangle_uvs`, shape `(T, 3, 2)` — one UV per triangle corner.
+*   `gnm.quad_uvs`, shape `(Q, 4, 2)` — one UV per quad corner.
+*   `gnm.vertex_uvs`, shape `(V, 2)` — a single UV per vertex.
+
+Use the **per-face** coordinates (`triangle_uvs` or `quad_uvs`) for texturing.
+A vertex that lies on a UV seam maps to a different texture location in each
+adjacent face, so the per-vertex `vertex_uvs` cannot represent seams: it keeps
+only one UV per vertex, which makes the texture appear to overlap or tear along
+the seams (`vertex_uvs` also logs a warning to this effect). To texture the
+mesh with a renderer that expects per-vertex UVs, first split the shared
+vertices so that each triangle corner has its own vertex and its own
+`triangle_uvs` coordinate.
+
 ## Using the Semantic Sampler
 Generate meaningful identity and expression parameters using the
 `ExpressionSampler` and `IdentitySampler`.
