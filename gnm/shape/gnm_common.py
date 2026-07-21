@@ -22,6 +22,22 @@ enpt = enp.typing
 _EPSILON = 1e-8
 
 
+def _constant_like(
+    values: Any,
+    reference_array: enpt.FloatArray['...'],
+    xnp: Any,
+    dtype: Any,
+) -> enpt.FloatArray['...']:
+  """Creates a constant array on the same device as `reference_array`.
+
+  For PyTorch this places the constant on `reference_array.device`; for other
+  backends it falls back to a plain `asarray`.
+  """
+  if enp.lazy.is_torch(reference_array):
+    return xnp.asarray(values, dtype=dtype, device=reference_array.device)
+  return xnp.asarray(values, dtype=dtype)
+
+
 def take(
     array: enpt.FloatArray['...'],
     indices: enpt.IntArray['...'],
@@ -48,6 +64,8 @@ def take(
     xnp = enp.lazy.get_xnp(array)
   if enp.lazy.is_torch_xnp(xnp):
     axis = axis % array.ndim
+    # index_select requires indices to live on the same device as `array`.
+    indices = xnp.as_tensor(indices, device=array.device)
     indices_shape = indices.shape
     if len(indices_shape) > 1:
       indices_flat = indices.reshape(-1)
@@ -184,7 +202,10 @@ def axis_angle_to_rotation_matrix(
 
   norm_squared = xnp.sum(xnp.square(axis_angle), axis=-1, keepdims=True)
   angle = xnp.sqrt(
-      xnp.maximum(norm_squared, xnp.asarray(epsilon, dtype=norm_squared.dtype))
+      xnp.maximum(
+          norm_squared,
+          _constant_like(epsilon, axis_angle, xnp, norm_squared.dtype),
+      )
   )
   axis = axis_angle / angle
 
@@ -275,8 +296,8 @@ def joint_transforms_world(
       joints, 2, (num_joints, 1, 4), dtype=joints.dtype
   )
   # Set the last element to 1.0.
-  bottom_row = bottom_row + xnp.asarray(
-      [0.0, 0.0, 0.0, 1.0], dtype=joints.dtype
+  bottom_row = bottom_row + _constant_like(
+      [0.0, 0.0, 0.0, 1.0], joints, xnp, joints.dtype
   )
 
   local_transforms = xnp.concatenate(
