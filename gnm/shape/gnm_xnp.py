@@ -426,7 +426,7 @@ class GNM(gnm_base.GNMBase):
     e1 = quads.ravel()
     e2 = np.roll(quads, -1, axis=1).ravel()
     edges = np.stack([np.minimum(e1, e2), np.maximum(e1, e2)], axis=1)
-    edge_keys = e1 + self.num_vertices * e2
+    edge_keys = edges[:, 0] + self.num_vertices * edges[:, 1]
     _, unique_indices = np.unique(edge_keys, return_index=True)
     unique_undirected_edges = edges[unique_indices]
     return np.vstack(
