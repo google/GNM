@@ -74,7 +74,7 @@ cd gnm/gnm/shape
 ```
 
 *   **Core (NumPy + Tensorflow only):**
-    
+
     ```bash
     pip install -e .
     ```
@@ -90,7 +90,7 @@ cd gnm/gnm/shape
     ```bash
     pip install -e ".[pytorch]"
     ```
-    
+
 *   **All supported frameworks and development tools:**
 
     ```bash
