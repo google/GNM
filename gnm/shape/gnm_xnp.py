@@ -179,6 +179,11 @@ class GNM(gnm_base.GNMBase):
     def as_original(val):
       return val
 
+    def as_string_tuple(val):
+      if val is None:
+        return ()
+      return tuple(str(item) for item in val)
+
     field_converters = {
         'version': as_original,
         'variant': as_original,
@@ -188,16 +193,16 @@ class GNM(gnm_base.GNMBase):
         'vertex_identity_basis': as_float_array,
         'joint_identity_basis': as_float_array,
         'expression_basis': as_float_array,
-        'identity_names': as_original,
-        'joint_names': as_original,
-        'expression_names': as_original,
-        'joint_parent_indices': as_original,
+        'identity_names': as_string_tuple,
+        'joint_names': as_string_tuple,
+        'expression_names': as_string_tuple,
+        'joint_parent_indices': as_int_array,
         'skinning_weights': as_float_array,
         'quads': as_int_array,
         'triangles': as_int_array,
         'quad_uvs': as_float_array,
         'triangle_uvs': as_float_array,
-        'mesh_component_names': as_original,
+        'mesh_component_names': as_string_tuple,
         'mirror_indices': as_int_array,
         'joint_regressor': as_float_array,
         'pose_correctives_regressor': as_float_array,
@@ -208,6 +213,18 @@ class GNM(gnm_base.GNMBase):
 
     for field_name, converter in field_converters.items():
       val = model_data.get(field_name, None)
+      if (
+          val is None
+          and field_name == 'bone_aligned_template_joint_orientations'
+      ):
+        val = model_data.get('bone_aligned_orientations', None)
+        if val is None and 'joint_names' in model_data:
+          n_joints = len(model_data['joint_names'])
+          val = xnp.tile(xnp.eye(3, dtype=xnp.float32), (n_joints, 1, 1))
+      if val is None and field_name == 'mesh_component_names':
+        val = model_data.get('part_names', None)
+        if val is None:
+          val = ('skin',)
       init_kwargs[field_name] = converter(val)
 
     return init_kwargs
@@ -218,7 +235,7 @@ class GNM(gnm_base.GNMBase):
       model_data: Mapping[str, Any],
       xnp: enp.NpModule,
   ) -> Self:
-    """Creates a GNM instance from a model data dictionary and array module."""    
+    """Creates a GNM instance from a model data dictionary and array module."""
     init_kwargs = cls._prepare_init_kwargs(model_data, xnp)
     # pylint: disable=no-value-for-parameter
     instance = super(GNM, cls).__new__(cls)
@@ -256,6 +273,11 @@ class GNM(gnm_base.GNMBase):
           val = val.detach().cpu().numpy()
       data_dict[field.name] = val
     return data_dict
+
+  @property
+  def bone_aligned_orientations(self) -> enpt.FloatArray:
+    """Alias for bone_aligned_template_joint_orientations."""
+    return self.bone_aligned_template_joint_orientations
 
   def _check_parameter_shapes(
       self,
@@ -390,6 +412,7 @@ class GNM(gnm_base.GNMBase):
       joints: enpt.FloatArray['A1 ... An J 3'],
       rotations: enpt.FloatArray['A1 ... An J 3'],
       translation: enpt.FloatArray['A1 ... An 3'],
+      **_kwargs,
   ) -> enpt.FloatArray['A1 ... An V 3']:
     """Applies linear blend skinning to GNM vertices."""
     return gnm_common.linear_blend_skinning(
@@ -500,6 +523,7 @@ class GNM(gnm_base.GNMBase):
       self,
       identity: enpt.FloatArray['A1 ... An I'],
       expression: enpt.FloatArray['A1 ... An E'],
+      **_kwargs,
   ) -> enpt.FloatArray['A1 ... An V 3']:
     return gnm_common.vertex_positions_bind_pose(
         identity,
@@ -511,7 +535,7 @@ class GNM(gnm_base.GNMBase):
 
   @enp.check_and_normalize_arrays(strict=False)
   def joint_positions_bind_pose(
-      self, identity: enpt.FloatArray['A1 ... An I']
+      self, identity: enpt.FloatArray['A1 ... An I'], **_kwargs
   ) -> enpt.FloatArray['A1 ... An J 3']:
     return gnm_common.joint_positions_bind_pose(
         identity,
@@ -521,7 +545,7 @@ class GNM(gnm_base.GNMBase):
 
   @enp.check_and_normalize_arrays(strict=False)
   def compute_pose_correctives(
-      self, rotations: enpt.FloatArray['A1 ... An J 3']
+      self, rotations: enpt.FloatArray['A1 ... An J 3'], **_kwargs
   ) -> enpt.FloatArray['A1 ... An V 3']:
     return gnm_common.compute_pose_correctives(
         rotations,
@@ -537,6 +561,7 @@ class GNM(gnm_base.GNMBase):
       joints: enpt.FloatArray['A1 ... An J 3'],
       rotations: enpt.FloatArray['A1 ... An J 3'],
       translation: enpt.FloatArray['A1 ... An 3'],
+      **_kwargs,
   ) -> enpt.FloatArray['A1 ... An J 4 4']:
     return gnm_common.joint_transforms_world(
         joints, rotations, translation, self.joint_parent_indices
@@ -579,7 +604,10 @@ class GNM(gnm_base.GNMBase):
         operator, name = name[0], name[1:]
       if name[0] == '~':
         inverse, name = True, name[1:]
-      group_mask = self.vertex_group(name) > threshold
+      try:
+        group_mask = self.vertex_group(name) > threshold
+      except KeyError:
+        continue
       if inverse:
         group_mask = ~group_mask
       match operator:

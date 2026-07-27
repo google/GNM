@@ -191,10 +191,10 @@ def axis_angle_to_rotation_matrix(
   sin_angle, cos_angle = xnp.sin(angle), xnp.cos(angle)
   sin_angle, cos_angle = sin_angle[..., None], cos_angle[..., None]
 
-  matrix = xnp.broadcast_to(
-      eye(3, dtype=angle.dtype, reference_array=axis_angle, xnp=xnp),
-      (*axis_angle.shape[:-1], 3, 3),
-  )
+  eyem = eye(3, dtype=angle.dtype, reference_array=axis_angle, xnp=xnp)
+  for _ in range(axis_angle.ndim - 1):
+    eyem = eyem[None, ...]
+  matrix = eyem + xnp.zeros_like(axis_angle[..., None])
 
   skew_01 = -axis[..., 2]
   skew_02 = axis[..., 1]
