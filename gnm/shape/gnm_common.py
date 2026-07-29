@@ -81,6 +81,9 @@ def eye(
   """
   if xnp is None:
     xnp = enp.lazy.get_xnp(reference_array)
+  # tf.experimental.numpy requires a NumPy dtype and rejects tf.dtypes.DType.
+  if hasattr(dtype, 'as_numpy_dtype'):
+    dtype = dtype.as_numpy_dtype
   if enp.lazy.is_torch(reference_array):
     return xnp.eye(size, dtype=dtype, device=reference_array.device)
   else:
@@ -150,6 +153,9 @@ def zeros_with_batch_dims(
 
   shape = _graph_shape(reference_array)
   batch_shape = shape[:-num_reference_non_batch_dims]
+  # tf.experimental.numpy requires a NumPy dtype and rejects tf.dtypes.DType.
+  if hasattr(dtype, 'as_numpy_dtype'):
+    dtype = dtype.as_numpy_dtype
   array_kwargs = dict(dtype=dtype)
 
   if enp.lazy.is_tf_xnp(xnp):
@@ -192,10 +198,19 @@ def axis_angle_to_rotation_matrix(
   sin_angle, cos_angle = xnp.sin(angle), xnp.cos(angle)
   sin_angle, cos_angle = sin_angle[..., None], cos_angle[..., None]
 
-  matrix = xnp.broadcast_to(
-      eye(3, dtype=angle.dtype, reference_array=axis_angle, xnp=xnp),
-      (*axis_angle.shape[:-1], 3, 3),
-  )
+  eye_matrix = eye(3, dtype=angle.dtype, reference_array=axis_angle, xnp=xnp)
+  if enp.lazy.is_tf(axis_angle):
+    matrix = enp.lazy.tf.broadcast_to(
+        eye_matrix,
+        enp.lazy.tf.concat(
+            [enp.lazy.tf.shape(axis_angle)[:-1], [3, 3]], axis=0
+        ),
+    )
+  else:
+    matrix = xnp.broadcast_to(
+        eye_matrix,
+        (*axis_angle.shape[:-1], 3, 3),
+    )
 
   skew_01 = -axis[..., 2]
   skew_02 = axis[..., 1]
@@ -474,7 +489,7 @@ def compute_pose_correctives(
 
   if pose_correctives_regressor is None or rotations is None:
     return zeros_with_batch_dims(
-        template_vertex_positions,
+        rotations if rotations is not None else template_vertex_positions,
         2,
         (num_vertices, 3),
         dtype=template_vertex_positions.dtype,
