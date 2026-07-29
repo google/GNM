@@ -81,6 +81,9 @@ def eye(
   """
   if xnp is None:
     xnp = enp.lazy.get_xnp(reference_array)
+  # tf.experimental.numpy requires a NumPy dtype and rejects tf.dtypes.DType.
+  if hasattr(dtype, 'as_numpy_dtype'):
+    dtype = dtype.as_numpy_dtype
   if enp.lazy.is_torch(reference_array):
     return xnp.eye(size, dtype=dtype, device=reference_array.device)
   else:
@@ -150,6 +153,9 @@ def zeros_with_batch_dims(
 
   shape = _graph_shape(reference_array)
   batch_shape = shape[:-num_reference_non_batch_dims]
+  # tf.experimental.numpy requires a NumPy dtype and rejects tf.dtypes.DType.
+  if hasattr(dtype, 'as_numpy_dtype'):
+    dtype = dtype.as_numpy_dtype
   array_kwargs = dict(dtype=dtype)
 
   if enp.lazy.is_tf_xnp(xnp):
@@ -474,7 +480,7 @@ def compute_pose_correctives(
 
   if pose_correctives_regressor is None or rotations is None:
     return zeros_with_batch_dims(
-        template_vertex_positions,
+        rotations if rotations is not None else template_vertex_positions,
         2,
         (num_vertices, 3),
         dtype=template_vertex_positions.dtype,
