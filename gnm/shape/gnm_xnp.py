@@ -21,6 +21,7 @@ import collections
 from collections.abc import Mapping, Sequence
 import dataclasses
 import functools
+import typing
 from typing import Any, Self
 
 from absl import logging
@@ -32,7 +33,41 @@ from gnm.shape.data.versions import gnm_specs
 import numpy as np
 import numpy.typing as npt
 
-enpt = enp.typing
+if typing.TYPE_CHECKING:
+
+  class FloatArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class IntArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class BoolArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class _EnpTypingMock:
+    # pylint: disable=invalid-name
+    FloatArray = FloatArray
+    IntArray = IntArray
+    BoolArray = BoolArray
+    # pylint: enable=invalid-name
+
+  enpt = _EnpTypingMock()
+
+  V = typing.Any
+  VPruned = typing.Any
+  L = typing.Any
+else:
+  enpt = enp.typing
+
 
 _NONZERO_THRESHOLD = 1e-4
 _EPSILON = 1e-8
@@ -107,26 +142,26 @@ class GNM(gnm_base.GNMBase):
 
   version: gnm_specs.GNMVersion
   variant: gnm_specs.GNMVariant
-  template_vertex_positions: enpt.FloatArray
-  template_joint_positions: enpt.FloatArray
-  vertex_identity_basis: enpt.FloatArray
-  joint_identity_basis: enpt.FloatArray
-  expression_basis: enpt.FloatArray
+  template_vertex_positions: enpt.FloatArray['V 3']
+  template_joint_positions: enpt.FloatArray['J 3']
+  vertex_identity_basis: enpt.FloatArray['I V 3']
+  joint_identity_basis: enpt.FloatArray['I J 3']
+  expression_basis: enpt.FloatArray['E V 3']
   identity_names: Sequence[str]
   joint_names: Sequence[str]
   expression_names: Sequence[str]
   joint_parent_indices: Sequence[int]
-  skinning_weights: enpt.FloatArray
-  quads: enpt.IntArray
-  triangles: enpt.IntArray
-  quad_uvs: enpt.FloatArray
-  triangle_uvs: enpt.FloatArray
+  skinning_weights: enpt.FloatArray['J V']
+  quads: enpt.IntArray['Q 4']
+  triangles: enpt.IntArray['T 3']
+  quad_uvs: enpt.FloatArray['Q 4 2']
+  triangle_uvs: enpt.FloatArray['T 3 2']
   mesh_component_names: Sequence[str]
-  mirror_indices: enpt.IntArray
-  joint_regressor: enpt.FloatArray
-  pose_correctives_regressor: enpt.FloatArray
-  bone_aligned_template_joint_orientations: enpt.FloatArray
-  vertex_groups: enpt.FloatArray
+  mirror_indices: enpt.IntArray['V']
+  joint_regressor: enpt.FloatArray['J V']
+  pose_correctives_regressor: enpt.FloatArray['9*J 3*V']
+  bone_aligned_template_joint_orientations: enpt.FloatArray['J 3 3']
+  vertex_groups: enpt.FloatArray['G V']
   vertex_group_names: Sequence[str]
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -143,7 +178,8 @@ class GNM(gnm_base.GNMBase):
     }
     self._xnp = enp.get_np_module(self.template_vertex_positions)
     self._landmarks: dict[
-        gnm_landmarks.GNMLandmarksType, tuple[enpt.IntArray, enpt.FloatArray]
+        gnm_landmarks.GNMLandmarksType,
+        tuple[enpt.IntArray['L'], enpt.FloatArray['L']],
     ] = {}
 
   @property
@@ -571,7 +607,7 @@ class GNM(gnm_base.GNMBase):
 
   def vertex_group_mask(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
-  ) -> npt.NDArray[bool]:
+  ) -> npt.NDArray[np.bool_]:
     result_mask = np.zeros(self.num_vertices, dtype=bool)
     for name in names:
       operator, inverse = '|', False
@@ -629,7 +665,7 @@ class GNM(gnm_base.GNMBase):
         'Subclasses must implement compute_vertex_normals.'
     )
 
-  def prune_vertices(self, keep_vertices: enpt.IntArray['V_pruned']) -> None:
+  def prune_vertices(self, keep_vertices: enpt.IntArray['VPruned']) -> None:
     """Prunes model vertices in-place."""
     xnp = self.xnp
     num_vertices = self.num_vertices

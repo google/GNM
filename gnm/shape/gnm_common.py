@@ -14,10 +14,41 @@
 
 """Backend-agnostic core math functions of the GNM model using etils.enp."""
 
+import typing
 from typing import Any, Sequence
 from etils import enp
 
-enpt = enp.typing
+if typing.TYPE_CHECKING:
+
+  class FloatArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class IntArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class BoolArray:
+
+    @classmethod
+    def __class_getitem__(cls, _):
+      return typing.Any
+
+  class _EnpTypingMock:
+    # pylint: disable=invalid-name
+    FloatArray = FloatArray
+    IntArray = IntArray
+    BoolArray = BoolArray
+    # pylint: enable=invalid-name
+
+  enpt = _EnpTypingMock()
+else:
+  enpt = enp.typing
+
 
 _EPSILON = 1e-8
 
