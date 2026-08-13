@@ -110,8 +110,8 @@ def _validate_gnm_data(
     has exactly the expected fields, the missing fields and the extra fields.
   """
   expected_fields = gnm_data_schema.GNM_DATA_ATTRIBUTES
-  missing_fields = list(set(expected_fields) - set(data.keys()))
-  extra_fields = list(set(data.keys()) - set(expected_fields))
+  missing_fields = sorted(set(expected_fields) - set(data.keys()))
+  extra_fields = sorted(set(data.keys()) - set(expected_fields))
   return not missing_fields and not extra_fields, missing_fields, extra_fields
 
 

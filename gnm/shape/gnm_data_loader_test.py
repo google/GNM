@@ -14,12 +14,15 @@
 
 """Tests for gnm_data_loader."""
 
+# pylint: disable=protected-access
+
 from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 from etils import epath
 from gnm.shape import gnm_data_loader
+from gnm.shape import gnm_data_schema
 from gnm.shape.data.versions import gnm_specs
 from gnm.shape.data.versions import gnm_test_catalog
 
@@ -44,6 +47,19 @@ class GNMDataTest(parameterized.TestCase):
 
 class GNMModelLoadingTest(parameterized.TestCase):
   """Tests for loading GNM model files."""
+
+  def test_validate_gnm_data_returns_sorted_diagnostics(self):
+    data = {field: object() for field in gnm_data_schema.GNM_DATA_ATTRIBUTES}
+    del data['identity_names']
+    del data['joint_names']
+    data['zz_extra'] = object()
+    data['aa_extra'] = object()
+
+    valid, missing, extra = gnm_data_loader._validate_gnm_data(data)
+
+    self.assertFalse(valid)
+    self.assertEqual(missing, ['identity_names', 'joint_names'])
+    self.assertEqual(extra, ['aa_extra', 'zz_extra'])
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
