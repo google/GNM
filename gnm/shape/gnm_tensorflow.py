@@ -92,7 +92,8 @@ class GNM(gnm_xnp.GNM):
     version: The version of the loaded GNM model.
     pose_correctives_regressor: Matrix for pose correctives, (9*J, 3*V).
     joint_regressor: Mapping from vertices to joints, (J, V).
-    bone_aligned_orientations: The bone-aligned rotations for each joint, (J, 3,
+    bone_aligned_template_joint_orientations: The bone-aligned rotations for each
+      joint, (J, 3,
       3). If they do not exist in the GNM npz, they are set to the identity
       matrix. Note that these are not used to compute the GNM joint and vertex
       positions.
