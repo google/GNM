@@ -14,10 +14,12 @@
 
 """GNM data loader."""
 
-# from collections.abc import Mapping, Sequence
 from collections.abc import Sequence
 import functools
+import importlib
+import os
 from typing import Any
+import urllib.request
 
 from absl import logging
 from etils import epath
@@ -30,6 +32,12 @@ _pkg = __package__ or 'gnm.shape'
 _MODELS_VERSIONS_DIR = epath.resource_path(f'{_pkg}.data.versions')
 _VARIANT_TO_MODEL_FILE_NAME_MAP = (
     gnm_models_catalog.VARIANT_TO_MODEL_FILE_NAME_MAP
+)
+
+DEFAULT_HF_REPO = 'google/gnm-{major}'
+DEFAULT_KAGGLE_HANDLE_PREFIX = 'google/gnm-{major}/other'
+DEFAULT_HF_CDN_BASE_URL = (
+    'https://huggingface.co/google/gnm-{major}/resolve/main'
 )
 
 
@@ -94,6 +102,344 @@ def load_model_from_runfile(
   return _standardize_gnm_data_types(data_dict)
 
 
+def get_default_gnm_cache_dir() -> epath.Path:
+  """Returns the default directory for caching downloaded GNM models."""
+  if env_cache := os.getenv('GNM_CACHE_DIR'):
+    return epath.Path(env_cache)
+  if xdg_cache := os.getenv('XDG_CACHE_HOME'):
+    return epath.Path(xdg_cache) / 'gnm' / 'models'
+  return epath.Path(os.path.expanduser('~/.cache/gnm/models'))
+
+
+def _download_file(
+    url: str,
+    destination: epath.Path,
+    timeout: int = 120,
+) -> epath.Path:
+  """Downloads a remote file via HTTP/HTTPS to a destination path atomically."""
+  destination.parent.mkdir(parents=True, exist_ok=True)
+  temp_destination = destination.with_suffix(
+      f'{destination.suffix}.tmp.{os.getpid()}'
+  )
+  logging.info('Downloading %s to %s...', url, destination)
+  req = urllib.request.Request(
+      url,
+      headers={'User-Agent': 'gnm-client-python'},
+  )
+  try:
+    with (
+        urllib.request.urlopen(req, timeout=timeout) as response,
+        temp_destination.open('wb') as out_f,
+    ):
+      while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+          break
+        out_f.write(chunk)
+  except Exception:
+    if temp_destination.exists():
+      temp_destination.unlink()
+    raise
+
+  temp_destination.replace(destination)
+  return destination
+
+
+def _get_version_dir_name(version: gnm_specs.GNMMajorVersion) -> str:
+  """Returns directory name for version (e.g. 'v3_0')."""
+  version_value = major_to_newest_full_version(version).value.replace('.', '_')
+  return f'v{version_value}'
+
+
+def _get_model_filename(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+) -> str:
+  """Returns filename for model variant (e.g. 'gnm_head.npz')."""
+  del version
+  return f'{_VARIANT_TO_MODEL_FILE_NAME_MAP[variant]}.npz'
+
+
+def _load_model_dict_from_file(
+    model_file: epath.Path,
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+) -> dict[str, Any]:
+  """Loads and standardizes model dict from a local file path."""
+  with model_file.open('rb') as f:
+    data_dict = dict(np.load(f))
+
+  del version, variant
+
+  # Validate the data.
+  valid, missing, extra = _validate_gnm_data(data_dict)
+  if not valid:
+    raise ValueError(
+        f'Validation failed for model from {model_file}.'
+        f' Missing: {missing}, Extra: {extra}'
+    )
+
+  return _standardize_gnm_data_types(data_dict)
+
+
+def _resolve_remote_model_file(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    cache_dir: epath.Path,
+    force_download: bool = False,
+) -> epath.Path:
+  """Downloads the model file via HTTP/HTTPS from the official CDN."""
+  version_dir_name = _get_version_dir_name(version)
+  major_tag = version_dir_name.split('_', maxsplit=1)[0]
+  model_file_name = _get_model_filename(version, variant)
+  cached_file = cache_dir / version_dir_name / model_file_name
+  if cached_file.exists() and not force_download:
+    return cached_file
+
+  cdn_base = (
+      DEFAULT_HF_CDN_BASE_URL.format(major=major_tag)
+      if '{major}' in DEFAULT_HF_CDN_BASE_URL
+      else DEFAULT_HF_CDN_BASE_URL
+  )
+  cdn_url = f'{cdn_base}/{version_dir_name}/{model_file_name}'
+  try:
+    return _download_file(cdn_url, cached_file)
+  except Exception as e:
+    raise FileNotFoundError(
+        f'Could not download GNM model file for version {version} and variant'
+        f' {variant} from CDN URL: {cdn_url}.\nError: {e}'
+    ) from e
+
+
+def _resolve_huggingface_model_file(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    repo_id: str,
+    revision: str,
+    cache_dir: epath.Path,
+    force_download: bool = False,
+) -> epath.Path:
+  """Resolves model file from HF Hub via huggingface_hub SDK or CDN fallback."""
+  version_dir_name = _get_version_dir_name(version)
+  major_tag = version_dir_name.split('_', maxsplit=1)[0]
+  model_file_name = _get_model_filename(version, variant)
+  filename = f'{version_dir_name}/{model_file_name}'
+
+  if '{major}' in repo_id:
+    effective_repo_id = repo_id.format(major=major_tag)
+  elif repo_id == 'google/gnm':
+    effective_repo_id = f'google/gnm-{major_tag}'
+  else:
+    effective_repo_id = repo_id
+
+  try:
+    huggingface_hub = importlib.import_module('huggingface_hub')
+    downloaded_path = huggingface_hub.hf_hub_download(
+        repo_id=effective_repo_id,
+        filename=filename,
+        revision=revision,
+        cache_dir=str(cache_dir),
+        force_download=force_download,
+    )
+    return epath.Path(downloaded_path)
+  except ImportError:
+    cdn_url = (
+        f'https://huggingface.co/{effective_repo_id}/resolve/{revision}/'
+        f'{filename}'
+    )
+    cached_file = cache_dir / effective_repo_id.replace('/', '_') / filename
+    if cached_file.exists() and not force_download:
+      return cached_file
+    try:
+      return _download_file(cdn_url, cached_file)
+    except Exception as e:
+      raise FileNotFoundError(
+          f'Could not download GNM model file for version {version} and variant'
+          f' {variant} from Hugging Face CDN URL: {cdn_url}.\nError: {e}'
+      ) from e
+
+
+def _resolve_kaggle_model_file(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    handle_prefix: str,
+    cache_dir: epath.Path,
+    force_download: bool = False,
+) -> epath.Path:
+  """Resolves model file from Kaggle Models using kagglehub SDK."""
+  del cache_dir  # kagglehub manages its own internal cache directory.
+  try:
+    kagglehub = importlib.import_module('kagglehub')
+  except ImportError as e:
+    raise ImportError(
+        'Loading from Kaggle requires kagglehub. Run: pip install kagglehub'
+    ) from e
+
+  version_dir_name = _get_version_dir_name(version)
+  major_tag = version_dir_name.split('_', maxsplit=1)[0]
+  model_file_name = _get_model_filename(version, variant)
+  npz_stem = model_file_name.removesuffix('.npz')
+  variation_slug = f'{npz_stem}_{version_dir_name}'
+
+  if not handle_prefix or handle_prefix in ('google/gnm/other', 'google/gnm'):
+    resolved_prefix = f'google/gnm-{major_tag}/other'
+  elif '{major}' in handle_prefix:
+    resolved_prefix = handle_prefix.format(major=major_tag)
+  else:
+    resolved_prefix = handle_prefix
+
+  parts = resolved_prefix.strip('/').split('/')
+  match len(parts):
+    case 1:
+      kaggle_handle = f'{parts[0]}/gnm-{major_tag}/other/{variation_slug}'
+    case 2:
+      kaggle_handle = f'{parts[0]}/{parts[1]}/other/{variation_slug}'
+    case 3:
+      kaggle_handle = f'{resolved_prefix}/{variation_slug}'
+    case _:
+      kaggle_handle = resolved_prefix
+  downloaded_path = kagglehub.model_download(
+      kaggle_handle,
+      path=model_file_name,
+      force_download=force_download,
+  )
+  result_path = epath.Path(downloaded_path)
+  if result_path.is_dir():
+    result_path = result_path / model_file_name
+  return result_path
+
+
+@functools.lru_cache
+def load_model_from_remote(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    *,
+    cache_dir: epath.PathLike | None = None,
+    force_download: bool = False,
+) -> dict[str, Any]:
+  """Loads GNM model data via HTTP/HTTPS from remote CDN.
+
+  Args:
+    version: GNM major version.
+    variant: GNM model variant.
+    cache_dir: Custom local cache directory (Path or str). Defaults to
+      `~/.cache/gnm/models/`.
+    force_download: If True, forces redownload even if cached locally.
+
+  Returns:
+    A dictionary containing the standardized GNM model data.
+
+  Raises:
+    FileNotFoundError: If the model file cannot be downloaded.
+    ValueError: If validation of the model data fails.
+  """
+  cache_path = (
+      epath.Path(cache_dir)
+      if cache_dir is not None
+      else get_default_gnm_cache_dir()
+  )
+  model_file = _resolve_remote_model_file(
+      version, variant, cache_path, force_download
+  )
+  logging.info(
+      'Loading GNM model version %s, variant %s from remote file: %s',
+      version,
+      variant,
+      model_file,
+  )
+  return _load_model_dict_from_file(model_file, version, variant)
+
+
+@functools.lru_cache
+def load_model_from_huggingface(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    *,
+    repo_id: str = DEFAULT_HF_REPO,
+    revision: str = 'main',
+    cache_dir: epath.PathLike | None = None,
+    force_download: bool = False,
+) -> dict[str, Any]:
+  """Loads GNM model data from Hugging Face Hub.
+
+  Args:
+    version: GNM major version.
+    variant: GNM model variant.
+    repo_id: Hugging Face repository ID. Defaults to 'google/gnm-{major}'.
+    revision: Git revision / branch / tag on Hugging Face. Defaults to 'main'.
+    cache_dir: Custom local cache directory (Path or str). Defaults to
+      `~/.cache/gnm/models/`.
+    force_download: If True, forces redownload even if cached locally.
+
+  Returns:
+    A dictionary containing the standardized GNM model data.
+
+  Raises:
+    FileNotFoundError: If the model file cannot be downloaded from Hugging Face.
+    ValueError: If validation of the model data fails.
+  """
+  cache_path = (
+      epath.Path(cache_dir)
+      if cache_dir is not None
+      else get_default_gnm_cache_dir()
+  )
+  model_file = _resolve_huggingface_model_file(
+      version, variant, repo_id, revision, cache_path, force_download
+  )
+  logging.info(
+      'Loading GNM model version %s, variant %s from Hugging Face: %s',
+      version,
+      variant,
+      model_file,
+  )
+  return _load_model_dict_from_file(model_file, version, variant)
+
+
+@functools.lru_cache
+def load_model_from_kaggle(
+    version: gnm_specs.GNMMajorVersion,
+    variant: gnm_specs.GNMVariant,
+    *,
+    handle_prefix: str = DEFAULT_KAGGLE_HANDLE_PREFIX,
+    cache_dir: epath.PathLike | None = None,
+    force_download: bool = False,
+) -> dict[str, Any]:
+  """Loads GNM model data from Kaggle Models.
+
+  Args:
+    version: GNM major version.
+    variant: GNM model variant.
+    handle_prefix: Kaggle handle prefix. Defaults to 'google/gnm-{major}/other'.
+    cache_dir: Optional custom local cache directory (Path or str). Note:
+      kagglehub manages its own internal cache; accepted for interface
+      consistency.
+    force_download: If True, forces redownload even if cached locally.
+
+  Returns:
+    A dictionary containing the standardized GNM model data.
+
+  Raises:
+    ImportError: If kagglehub is not installed.
+    FileNotFoundError: If the model file cannot be downloaded from Kaggle.
+    ValueError: If validation of the model data fails.
+  """
+  cache_path = (
+      epath.Path(cache_dir)
+      if cache_dir is not None
+      else get_default_gnm_cache_dir()
+  )
+  model_file = _resolve_kaggle_model_file(
+      version, variant, handle_prefix, cache_path, force_download
+  )
+  logging.info(
+      'Loading GNM model version %s, variant %s from Kaggle: %s',
+      version,
+      variant,
+      model_file,
+  )
+  return _load_model_dict_from_file(model_file, version, variant)
+
+
 def _validate_gnm_data(
     data: dict[str, Any],
 ) -> tuple[bool, Sequence[str], Sequence[str]]:
@@ -109,9 +455,11 @@ def _validate_gnm_data(
     A tuple of (bool, Sequence[str], Sequence[str]) indicating if the data dict
     has exactly the expected fields, the missing fields and the extra fields.
   """
-  expected_fields = gnm_data_schema.GNM_DATA_ATTRIBUTES
-  missing_fields = list(set(expected_fields) - set(data.keys()))
-  extra_fields = list(set(data.keys()) - set(expected_fields))
+  expected_fields = set(gnm_data_schema.GNM_DATA_ATTRIBUTES)
+  missing_fields = list(expected_fields - set(data.keys()))
+  extra_fields = list(
+      set(data.keys()) - set(gnm_data_schema.GNM_DATA_ATTRIBUTES)
+  )
   return not missing_fields and not extra_fields, missing_fields, extra_fields
 
 

@@ -21,6 +21,7 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Self
 
+from etils import epath
 from gnm.shape import gnm_data_loader
 from gnm.shape.data.versions import gnm_specs
 
@@ -40,6 +41,103 @@ class GNMBase(abc.ABC):
   ) -> Self:
     """Creates a GNM instance from a local model file."""
     data_dict = gnm_data_loader.load_model_from_runfile(version, variant)
+    return cls._from_model_data(data_dict)  # pyrefly: ignore[bad-return]
+
+  @classmethod
+  def from_remote(
+      cls,
+      version: gnm_specs.GNMMajorVersion,
+      variant: gnm_specs.GNMVariant,
+      *,
+      cache_dir: epath.PathLike | None = None,
+      force_download: bool = False,
+  ) -> Self:
+    """Creates a GNM instance from a model downloaded via HTTP/HTTPS CDN.
+
+    Args:
+      version: GNM major version.
+      variant: GNM model variant.
+      cache_dir: Optional custom directory (Path or str) to cache downloaded
+        models.
+      force_download: If True, forces redownload even if cached locally.
+
+    Returns:
+      A GNM instance loaded with the remote model weights.
+    """
+    data_dict = gnm_data_loader.load_model_from_remote(
+        version=version,
+        variant=variant,
+        cache_dir=cache_dir,
+        force_download=force_download,
+    )
+    return cls._from_model_data(data_dict)  # pyrefly: ignore[bad-return]
+
+  @classmethod
+  def from_huggingface(
+      cls,
+      version: gnm_specs.GNMMajorVersion,
+      variant: gnm_specs.GNMVariant,
+      *,
+      repo_id: str = gnm_data_loader.DEFAULT_HF_REPO,
+      revision: str = 'main',
+      cache_dir: epath.PathLike | None = None,
+      force_download: bool = False,
+  ) -> Self:
+    """Creates a GNM instance from Hugging Face Hub.
+
+    Args:
+      version: GNM major version.
+      variant: GNM model variant.
+      repo_id: Hugging Face repository ID. Defaults to 'google/gnm-{major}'.
+      revision: Git revision / branch / tag on Hugging Face. Defaults to 'main'.
+      cache_dir: Optional custom directory (Path or str) to cache downloaded
+        models.
+      force_download: If True, forces redownload even if cached locally.
+
+    Returns:
+      A GNM instance loaded with the model weights.
+    """
+    data_dict = gnm_data_loader.load_model_from_huggingface(
+        version=version,
+        variant=variant,
+        repo_id=repo_id,
+        revision=revision,
+        cache_dir=cache_dir,
+        force_download=force_download,
+    )
+    return cls._from_model_data(data_dict)  # pyrefly: ignore[bad-return]
+
+  @classmethod
+  def from_kaggle(
+      cls,
+      version: gnm_specs.GNMMajorVersion,
+      variant: gnm_specs.GNMVariant,
+      *,
+      handle_prefix: str = gnm_data_loader.DEFAULT_KAGGLE_HANDLE_PREFIX,
+      cache_dir: epath.PathLike | None = None,
+      force_download: bool = False,
+  ) -> Self:
+    """Creates a GNM instance from Kaggle Models.
+
+    Args:
+      version: GNM major version.
+      variant: GNM model variant.
+      handle_prefix: Kaggle handle prefix. Defaults to
+        'google/gnm-{major}/other'.
+      cache_dir: Optional custom directory (Path or str). Note: kagglehub
+        manages its own internal cache; accepted for interface consistency.
+      force_download: If True, forces redownload even if cached locally.
+
+    Returns:
+      A GNM instance loaded with the model weights.
+    """
+    data_dict = gnm_data_loader.load_model_from_kaggle(
+        version=version,
+        variant=variant,
+        handle_prefix=handle_prefix,
+        cache_dir=cache_dir,
+        force_download=force_download,
+    )
     return cls._from_model_data(data_dict)  # pyrefly: ignore[bad-return]
 
   @classmethod

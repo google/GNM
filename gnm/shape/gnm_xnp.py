@@ -65,7 +65,6 @@ class GNM(gnm_base.GNMBase):
   Attributes:
     version: The version of the loaded GNM model.
     variant: The variant of the loaded GNM model.
-    cl_number: The CL used to create this model.
     template_vertex_positions: Vertex positions in the template mesh, (V, 3).
     template_joint_positions: Joint positions in the template GNM, (J, 3).
     vertex_identity_basis: The vertex identity basis of the model, (I, V, 3).
@@ -187,7 +186,6 @@ class GNM(gnm_base.GNMBase):
     field_converters = {
         'version': as_original,
         'variant': as_original,
-        'cl_number': as_original,
         'template_vertex_positions': as_float_array,
         'template_joint_positions': as_float_array,
         'vertex_identity_basis': as_float_array,
