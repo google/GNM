@@ -131,6 +131,17 @@ class GNM(gnm_xnp.GNM, torch.nn.Module):
     """Creates a PyTorch GNM instance from model data."""
     return cls._from_model_data_with_xnp(model_data, xnp=torch)
 
+  @classmethod
+  def from_gnm(cls, gnm: gnm_xnp.GNM) -> GNM:
+    """Creates a PyTorch GNM from another GNM, preserving its device."""
+    new_gnm = super().from_gnm(gnm)
+    # `from_gnm` reconstructs the model from a NumPy data dict, so the new model
+    # is created on CPU. If the source model lives on another device, move the
+    # reconstructed model there to match.
+    if isinstance(gnm, torch.nn.Module):
+      new_gnm = new_gnm.to(gnm.template_vertex_positions.device)
+    return new_gnm
+
   def compute_vertex_normals(
       self,
       vertices: torch.Tensor,

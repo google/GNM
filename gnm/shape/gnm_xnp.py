@@ -387,6 +387,10 @@ class GNM(gnm_base.GNMBase):
         translation=translation,
     )
     weights = enp.compat.astype(weights, vertices.dtype)
+    # The landmark tensors are cached lazily and may live on a different device
+    # than the (possibly moved) model; align them with the output vertices.
+    if enp.lazy.is_torch(vertices):
+      weights = weights.to(vertices.device)
 
     face_vertices = gnm_common.take(vertices, indices, axis=-2, xnp=self.xnp)
     landmarks = self.xnp.sum(face_vertices * weights[..., None], axis=-2)
@@ -656,6 +660,10 @@ class GNM(gnm_base.GNMBase):
     xnp = self.xnp
     num_vertices = self.num_vertices
     keep_vertices = xnp.asarray(keep_vertices, dtype=xnp.int32)
+    # Keep the index tensor on the same device as the model buffers so that all
+    # downstream gathers stay device-consistent.
+    if enp.lazy.is_torch(self.template_vertex_positions):
+      keep_vertices = keep_vertices.to(self.template_vertex_positions.device)
 
     self.template_vertex_positions = gnm_common.take(
         self.template_vertex_positions, keep_vertices, axis=0, xnp=xnp
@@ -749,8 +757,11 @@ def _scatter_indices(keep_vertices, num_vertices, xnp) -> Any:
         jnp.arange(len(keep_vertices), dtype=jnp.int32)
     )
   elif enp.lazy.is_torch_xnp(xnp):
-    mapper = xnp.full((num_vertices,), -1, dtype=xnp.int32)
-    mapper[keep_vertices] = xnp.arange(len(keep_vertices), dtype=xnp.int32)
+    device = keep_vertices.device
+    mapper = xnp.full((num_vertices,), -1, dtype=xnp.int32, device=device)
+    mapper[keep_vertices] = xnp.arange(
+        len(keep_vertices), dtype=xnp.int32, device=device
+    )
     return mapper
   else:
     mapper = np.full((num_vertices,), -1, dtype=np.int32)
