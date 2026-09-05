@@ -43,9 +43,11 @@ import dataclasses
 from typing import Any
 
 from absl import logging
+from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
+import jax
 import jax.numpy as jnp
 import jaxtyping as jt
 
@@ -123,6 +125,91 @@ class GNM(gnm_xnp.GNM):
     """Creates a JAX GNM instance from model data."""
     return cls._from_model_data_with_xnp(model_data, xnp=jnp)
 
+  def __call__(
+      self,
+      identity: jt.Float[jnp.ndarray, "A1 ... An I"] | None = None,
+      expression: jt.Float[jnp.ndarray, "A1 ... An E"] | None = None,
+      rotations: jt.Float[jnp.ndarray, "A1 ... An J 3"] | None = None,
+      translation: jt.Float[jnp.ndarray, "A1 ... An 3"] | None = None,
+  ) -> jt.Float[jnp.ndarray, "A1 ... An V 3"]:
+    """Evaluates the GNM mesh-generating function."""
+    with jax.default_matmul_precision("float32"):
+      return super().__call__(
+          identity=identity,
+          expression=expression,
+          rotations=rotations,
+          translation=translation,
+      )
+
+  def vertex_positions_world(
+      self,
+      vertices: jt.Float[jnp.ndarray, "A1 ... An V 3"],
+      joints: jt.Float[jnp.ndarray, "A1 ... An J 3"],
+      rotations: jt.Float[jnp.ndarray, "A1 ... An J 3"],
+      translation: jt.Float[jnp.ndarray, "A1 ... An 3"],
+  ) -> jt.Float[jnp.ndarray, "A1 ... An V 3"]:
+    """Applies linear blend skinning to GNM vertices."""
+    with jax.default_matmul_precision("float32"):
+      return super().vertex_positions_world(
+          vertices=vertices,
+          joints=joints,
+          rotations=rotations,
+          translation=translation,
+      )
+
+  apply_linear_blend_skinning = vertex_positions_world
+
+  def vertex_positions_bind_pose(
+      self,
+      identity: jt.Float[jnp.ndarray, "A1 ... An I"] | None,
+      expression: jt.Float[jnp.ndarray, "A1 ... An E"] | None,
+  ) -> jt.Float[jnp.ndarray, "A1 ... An V 3"]:
+    """Computes vertices in the bind pose, with identity and expression applied."""
+    with jax.default_matmul_precision("float32"):
+      return super().vertex_positions_bind_pose(
+          identity=identity, expression=expression
+      )
+
+  def joint_positions_bind_pose(
+      self,
+      identity: jt.Float[jnp.ndarray, "A1 ... An I"] | None,
+  ) -> jt.Float[jnp.ndarray, "A1 ... An J 3"]:
+    """Joint positions in the bind pose, with identity basis applied."""
+    with jax.default_matmul_precision("float32"):
+      return super().joint_positions_bind_pose(identity=identity)
+
+  def compute_pose_correctives(
+      self,
+      rotations: jt.Float[jnp.ndarray, "A1 ... An J 3"] | None,
+  ) -> jt.Float[jnp.ndarray, "A1 ... An V 3"]:
+    """Applies pose-dependent corrective shape offsets to vertices."""
+    with jax.default_matmul_precision("float32"):
+      return super().compute_pose_correctives(rotations=rotations)
+
+  def joint_transforms_world(
+      self,
+      joints: jt.Float[jnp.ndarray, "A1 ... An J 3"],
+      rotations: jt.Float[jnp.ndarray, "A1 ... An J 3"],
+      translation: jt.Float[jnp.ndarray, "A1 ... An 3"],
+  ) -> jt.Float[jnp.ndarray, "A1 ... An J 4 4"]:
+    """Computes the world-space transformation matrices for each joint."""
+    with jax.default_matmul_precision("float32"):
+      return super().joint_transforms_world(
+          joints=joints, rotations=rotations, translation=translation
+      )
+
+  def get_posed_joint_transforms(
+      self,
+      identity: jt.Float[jnp.ndarray, "A1 ... An I"],
+      rotations: jt.Float[jnp.ndarray, "A1 ... An J 3"],
+      translation: jt.Float[jnp.ndarray, "A1 ... An 3"],
+  ) -> jt.Float[jnp.ndarray, "A1 ... An J 4 4"]:
+    """Computes the local-to-world transformation for every joint."""
+    with jax.default_matmul_precision("float32"):
+      return super().get_posed_joint_transforms(
+          identity=identity, rotations=rotations, translation=translation
+      )
+
   def compute_vertex_normals(
       self,
       vertices: jt.Float[jnp.ndarray, "... V 3"],
@@ -158,3 +245,13 @@ class GNM(gnm_xnp.GNM):
       )
     vertex_normals = vertex_normals / jnp.maximum(normal_magnitudes, 1e-8)
     return vertex_normals.reshape(batch_dims + (num_vertices, 3))
+
+
+def axis_angle_to_rotation_matrix(
+    axis_angle: jt.Float[jnp.ndarray, "... 3"],
+    epsilon: float = 1e-8,
+) -> jt.Float[jnp.ndarray, "... 3 3"]:
+  """Builds a 3x3 rotation matrix from an axis-angle vector."""
+  with jax.default_matmul_precision("float32"):
+    return gnm_common.axis_angle_to_rotation_matrix(axis_angle, epsilon=epsilon)
+
