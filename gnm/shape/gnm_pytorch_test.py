@@ -279,6 +279,7 @@ class GNMPytorchTest(parameterized.TestCase):
         gnm_pytorch.GNMMajorVersion(version.removeprefix('v')),
         gnm_pytorch.GNMVariant(variant_str),
     )
+    gnm_pruned.to(self.device)
 
     keep_vertices = gnm_np.quads[0]
     gnm_pruned.prune_vertices(keep_vertices)
