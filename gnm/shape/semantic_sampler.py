@@ -98,7 +98,7 @@ def _get_rng(rng: np.random.Generator | None) -> np.random.Generator:
 
 
 class ExpressionSampler:
-  """Samples expressions and identities from a Conditional VAE."""
+  """Samples expressions from a Conditional VAE."""
 
   def __init__(
       self,
@@ -169,7 +169,9 @@ class ExpressionSampler:
         'float32'
     )
 
-    generated_vectors = self._decoder.predict([z_sample, class_one_hot])
+    generated_vectors = self._decoder.predict(
+        [z_sample, class_one_hot], verbose=0
+    )
     class_name = self._expression_names[class_label]
     if verbose:
       print(
@@ -231,7 +233,7 @@ class ExpressionSampler:
 
     # Decode the blended latent vector and weighted average of one-hot labels
     blended_expression = self._decoder.predict(
-        [blended_latent_vector, blended_one_hot_label]
+        [blended_latent_vector, blended_one_hot_label], verbose=0
     )
     if verbose:
       print(
