@@ -126,7 +126,7 @@ def render(
         for part in part_names
     }
 
-  scene = pyrender.Scene()
+  scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0])
 
   def _create_texture(frame: int, part: str) -> pyrender.Texture:
     return pyrender.Texture(source=texture[part][frame], source_channels='RGB')
