@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import copy
 import itertools
 import re
+import time
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -29,11 +30,7 @@ from gnm.shape import gnm_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import numpy as np
 from scipy.spatial import transform as transform_module
-
-try:
-  from tensorflow_graphics.geometry.representation.mesh import normals as tf_normals
-except ImportError:
-  tf_normals = None
+from tensorflow_graphics.geometry.representation.mesh import normals as tf_normals
 import trimesh
 from trimesh import transformations
 
@@ -48,6 +45,22 @@ _INVALID_SUFFIXES = []
 
 _MAINTAINED_MAJOR_GNM_VERSIONS = gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
 _MAJOR_VERSION_TO_VARIANTS_MAP = gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP
+
+
+# These are upper bounds on the acceptable runtime for each model in a single
+# Float32 call operation. We expect most calls to be faster - but this allows
+# us to catch major regressions in runtime performance.
+_BENCHMARK_CONFIGS = [
+    # Head
+    dict(variant='head', batch_size=1, max_runtime_ms=80.0),
+    dict(variant='head', batch_size=100, max_runtime_ms=1500.0),
+    # Body
+    dict(variant='body', batch_size=1, max_runtime_ms=300.0),
+    dict(variant='body', batch_size=100, max_runtime_ms=4000.0),
+    # Hand
+    dict(variant='hand', batch_size=1, max_runtime_ms=40.0),
+    dict(variant='hand', batch_size=100, max_runtime_ms=600.0),
+]
 
 
 def transform_points(transform: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -1024,6 +1037,25 @@ class GNMNumpyTest(parameterized.TestCase):
     with self.assertLogs(level='WARNING') as log_output:
       gnm_np.compute_vertex_normals(vertices)
     self.assertIn('zero magnitude', log_output.output[0])
+
+  @parameterized.product(
+      _BENCHMARK_CONFIGS,
+      version=_MAINTAINED_MAJOR_GNM_VERSIONS,
+  )
+  def test_benchmark_call(
+      self, version: str, variant: str, batch_size: int, max_runtime_ms: float
+  ):
+    """Tests the benchmark for GNM on Float32 operations."""
+    gnm = self.gnms[version][variant]
+
+    parameters = self._get_default_kwargs(gnm, batch_dims=[batch_size])
+    parameters = {k: v.astype(np.float32) for k, v in parameters.items()}
+
+    # Run the benchmark.
+    t0 = time.time()
+    gnm(**parameters)
+    t1 = time.time()
+    self.assertLess(1000.0 * (t1 - t0), max_runtime_ms)
 
 
 class GNMNumpyFactoryMethodsTest(parameterized.TestCase):
