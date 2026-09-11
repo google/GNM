@@ -374,5 +374,59 @@ class PoseCorrectivesTest(parameterized.TestCase):
     self.assertEqual(tuple(result.shape), (4, 3, 3))
 
 
+class TestConstantBatch(parameterized.TestCase):
+  """Tests for _is_constant_batch."""
+
+  def test_single_or_empty_batch(self):
+    self.assertTrue(gnm_common._is_constant_batch(np.ones((1, 5)), np))
+    self.assertTrue(gnm_common._is_constant_batch(np.ones((5,)), np))
+    self.assertTrue(gnm_common._is_constant_batch(np.ones((4, 0)), np))
+
+  def test_constant_batch_detected(self):
+    tiled = np.tile(np.array([1.0, 2.0, 3.0]), (10, 1))
+    self.assertTrue(gnm_common._is_constant_batch(tiled, np))
+
+    broadcast = np.broadcast_to(np.array([1.0, 2.0, 3.0]), (10, 3))
+    self.assertTrue(gnm_common._is_constant_batch(broadcast, np))
+
+  def test_varying_batch_not_constant(self):
+    varying = np.arange(20.0).reshape(10, 2)
+    self.assertFalse(gnm_common._is_constant_batch(varying, np))
+
+    middle_diff = np.tile(np.array([1.0, 2.0]), (5, 1))
+    middle_diff[2] = [3.0, 4.0]
+    self.assertFalse(gnm_common._is_constant_batch(middle_diff, np))
+
+  def test_non_numpy_backend_returns_false(self):
+    mock_xnp = enp.lazy.jnp
+    self.assertFalse(gnm_common._is_constant_batch(np.ones((10, 3)), mock_xnp))
+
+
+class ApplyLinearBasisTest(parameterized.TestCase):
+  """Tests for _apply_linear_basis."""
+
+  def test_apply_linear_basis_constant(self):
+    params = np.tile(np.array([1.0, 2.0]), (4, 1)).astype(np.float32)
+    basis = np.arange(12, dtype=np.float32).reshape(2, 3, 2)
+    expected = np.einsum('...i,ijk->...jk', params, basis)
+    result = gnm_common._apply_linear_basis(params, basis, np)
+    np.testing.assert_allclose(result, expected)
+
+  def test_apply_linear_basis_varying(self):
+    params = np.arange(8, dtype=np.float32).reshape(4, 2)
+    basis = np.arange(12, dtype=np.float32).reshape(2, 3, 2)
+    expected = np.einsum('...i,ijk->...jk', params, basis)
+    result = gnm_common._apply_linear_basis(params, basis, np)
+    np.testing.assert_allclose(result, expected)
+
+  def test_apply_linear_basis_empty_features(self):
+    params = np.zeros((2, 3, 0), dtype=np.float32)
+    basis = np.zeros((0, 4, 3), dtype=np.float32)
+    expected = np.einsum('...i,ijk->...jk', params, basis)
+    result = gnm_common._apply_linear_basis(params, basis, np)
+    np.testing.assert_allclose(result, expected)
+    self.assertEqual(result.shape, (2, 3, 4, 3))
+
+
 if __name__ == '__main__':
   absltest.main()

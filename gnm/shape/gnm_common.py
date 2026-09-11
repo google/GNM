@@ -405,21 +405,11 @@ def vertex_positions_bind_pose(
   # Apply linear identity and expression bases.
   identity_deltas = 0.0
   if identity is not None:
-    identity_deltas = xnp.einsum(
-        '...i,ijk->...jk',
-        identity,
-        vertex_identity_basis,
-        **_einsum_kwargs(xnp),
-    )
+    identity_deltas = _apply_linear_basis(identity, vertex_identity_basis, xnp)
 
   expression_deltas = 0.0
   if expression is not None:
-    expression_deltas = xnp.einsum(
-        '...i,ijk->...jk',
-        expression,
-        expression_basis,
-        **_einsum_kwargs(xnp),
-    )
+    expression_deltas = _apply_linear_basis(expression, expression_basis, xnp)
 
   return template_vertex_positions + identity_deltas + expression_deltas
 
@@ -446,12 +436,7 @@ def joint_positions_bind_pose(
   xnp = enp.get_np_module(template_joint_positions)
   deltas = 0.0
   if identity is not None:
-    deltas = xnp.einsum(
-        '...i,ijk->...jk',
-        identity,
-        joint_identity_basis,
-        **_einsum_kwargs(xnp),
-    )
+    deltas = _apply_linear_basis(identity, joint_identity_basis, xnp)
 
   return template_joint_positions + deltas
 
@@ -521,9 +506,46 @@ def _graph_shape(
     return array.shape
 
 
-def _einsum_kwargs(xnp: Any) -> dict[str, Any]:
+def _einsum_kwargs(xnp: enp.NpModule) -> dict[str, Any]:
   """Returns optimization kwargs for einsum if running with NumPy."""
   if enp.lazy.is_np_xnp(xnp):
     return dict(optimize=True)
   return dict()
 
+
+def _is_constant_batch(
+    array: enpt.FloatArray['...'], xnp: enp.NpModule
+) -> bool:
+  """Checks if array is constant across its batch dimension(s)."""
+  if not enp.lazy.is_np_xnp(xnp):
+    return False
+
+  batch_size = int(xnp.prod(array.shape[:-1]))
+  if batch_size <= 1:
+    return True
+
+  has_zero_strides = all(stride == 0 for stride in array.strides[:-1])
+  if has_zero_strides:
+    return True
+
+  flattened_batch = array.reshape(batch_size, array.shape[-1])
+  first_frame = flattened_batch[0]
+  last_frame = flattened_batch[-1]
+  if not xnp.array_equal(first_frame, last_frame):
+    return False
+  return bool(xnp.all(flattened_batch == first_frame))
+
+
+def _apply_linear_basis(
+    params: enpt.FloatArray['... I'],
+    basis: enpt.FloatArray['I ...'],
+    xnp: enp.NpModule,
+) -> enpt.FloatArray['...']:
+  """Applies a linear basis, optimizing constant batches via broadcasting."""
+  batch_dims = params.shape[:-1]
+  if batch_dims and (0 not in params.shape) and _is_constant_batch(params, xnp):
+    single_param = params.reshape(-1, params.shape[-1])[0]
+    deltas = xnp.einsum('i,ijk->jk', single_param, basis, **_einsum_kwargs(xnp))
+    return xnp.broadcast_to(deltas, (*batch_dims, *deltas.shape))
+
+  return xnp.einsum('...i,ijk->...jk', params, basis, **_einsum_kwargs(xnp))
