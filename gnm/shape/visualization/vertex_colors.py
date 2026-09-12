@@ -27,7 +27,7 @@ CYAN = tuple([c / 255 for c in [39, 227, 227]])
 
 # Defines a mapping for shading particular regions. It is from a vertex group to
 # a tuple of modifiers that scales and adds an offset to the given color value.
-_VERTEX_GROUP_COLOR_MODIFIERS = {
+VERTEX_GROUP_COLOR_MODIFIERS = {
     'skin': (1.0, 0.0),
     'scleras': (0.6, 0.4),
     'irises': (0.6, 0.0),
@@ -56,7 +56,7 @@ def get_vertex_colors(
   color = np.array(color)  # pyrefly: ignore[bad-assignment]
   colors = np.zeros((gnm_np.num_vertices, 3))
 
-  for region, (scale, offset) in _VERTEX_GROUP_COLOR_MODIFIERS.items():
+  for region, (scale, offset) in VERTEX_GROUP_COLOR_MODIFIERS.items():
     if region in gnm_np.vertex_group_names:
       colors[gnm_np.vertex_group_indices(region)] = (
           color * scale + offset  # pyrefly: ignore[unsupported-operation]
