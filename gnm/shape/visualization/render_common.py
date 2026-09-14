@@ -21,7 +21,7 @@ loading, camera/projection helpers and batching utilities.
 
 from collections.abc import Sequence
 import functools
-from typing import Protocol
+from typing import Any, Protocol
 
 from etils import epath
 from gnm.shape import gnm_numpy
@@ -82,6 +82,7 @@ class BackendRenderFn(Protocol):
       alpha: float = 1.0,
       include_shading: bool = True,
       verbose: bool = False,
+      **backend_kwargs: Any,
   ) -> np.ndarray:
     ...
 
@@ -104,6 +105,7 @@ def render_gnm_mesh(
     multiple_gnms: bool = False,
     include_shading: bool = True,
     verbose: bool = False,
+    **backend_kwargs: Any,
 ) -> FloatArray:
   """Shared rendering implementation for GNM mesh renderers.
 
@@ -133,6 +135,8 @@ def render_gnm_mesh(
     multiple_gnms: If True, vertices is expected to be (..., M, V, 3).
     include_shading: Whether to include shading/lighting in the render.
     verbose: Whether to display progress.
+    **backend_kwargs: Additional keyword arguments forwarded to
+      `backend_render_fn`.
 
   Returns:
     Rendered image array of shape (..., H, W, 3).
@@ -280,6 +284,7 @@ def render_gnm_mesh(
       alpha=alpha,
       include_shading=include_shading,
       verbose=verbose,
+      **backend_kwargs,
   )
 
   color = renders.reshape(*batch_dims, height, width, 3)
