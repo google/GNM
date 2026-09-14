@@ -14,6 +14,9 @@
 
 """Visualization utilities for GNM."""
 
+import collections.abc
+import functools
+from typing import Any
 from gnm.shape import gnm_numpy
 from gnm.shape.visualization import gnm_pyrender
 from gnm.shape.visualization import render_common
@@ -38,6 +41,9 @@ def render_gnm(
     multiple_gnms: bool = False,
     include_shading: bool = True,
     verbose: bool = False,
+    renderer_factory: collections.abc.Callable[..., Any] = (
+        gnm_pyrender.DEFAULT_RENDERER_FACTORY
+    ),
 ) -> render_common.FloatArray:
   """Render GNM meshes.
 
@@ -102,6 +108,8 @@ def render_gnm(
     include_shading: Whether to include shading. If False, the mesh will be
       rendered without light or shading.
     verbose: Whether to print progress bars.
+    renderer_factory: Optional factory function returning a
+      pyrender.OffscreenRenderer.
 
   Returns:
     A rendered image of GNM, (..., H, W, 3).
@@ -110,9 +118,13 @@ def render_gnm(
     ValueError: If multiple_gnms=True, but vertices is only 2D.
   """
 
+  backend_render_fn = functools.partial(
+      gnm_pyrender.render, renderer_factory=renderer_factory
+  )
+
   return render_common.render_gnm_mesh(
       gnm_np=gnm_np,
-      backend_render_fn=gnm_pyrender.render,
+      backend_render_fn=backend_render_fn,
       convert_cameras_to_opengl=True,
       vertices=vertices,
       world_to_camera=world_to_camera,
