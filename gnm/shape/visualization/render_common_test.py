@@ -503,6 +503,25 @@ class TestRenderGNMMesh(parameterized.TestCase):
     )
     self.assertEqual(res.shape, (3, 4, 48, 64, 3))
 
+  def test_render_gnm_mesh_forwards_backend_kwargs(self):
+    captured_kwargs = {}
+
+    def mock_backend(*args: Any, **kwargs: Any) -> render_common.FloatArray:
+      del args
+      captured_kwargs.update(kwargs)
+      n = kwargs['vertices'].shape[0]
+      w, h = kwargs['image_size']
+      return np.zeros((n, h, w, 3), dtype=np.float32)
+
+    render_common.render_gnm_mesh(
+        gnm_np=self.gnm_np,
+        backend_render_fn=mock_backend,
+        custom_arg='test_value',
+        another_kwarg=42,
+    )
+    self.assertEqual(captured_kwargs.get('custom_arg'), 'test_value')
+    self.assertEqual(captured_kwargs.get('another_kwarg'), 42)
+
 
 if __name__ == '__main__':
   absltest.main()
