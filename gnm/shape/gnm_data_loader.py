@@ -86,6 +86,13 @@ def load_model_from_runfile(
 ) -> dict[str, Any]:
   """Loads GNM model data from a runfile for the given version/variant."""
   model_file = _get_model_path_from_version_and_variant(version, variant)
+  if not model_file.exists():
+    raise FileNotFoundError(
+        f'GNM model file {model_file} not found. In the public release,'
+        ' model weights are not packaged with the repository. Please use'
+        ' `GNM.from_remote(...)` to automatically download the model from'
+        ' CDNs (Hugging Face Hub, Kaggle, etc.).'
+    )
 
   logging.info(
       'Loading GNM model version %s, variant %s from runfiles: %s',

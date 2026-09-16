@@ -35,8 +35,7 @@ gnm/shape/
 ├── data/                   # GNM model assets and versions
 │   ├── textures/           # Model textures (.jpg, .png)
 │   ├── semantic_sampler/   # Pre-trained .h5 semantic sampling models
-│   └── versions/
-│       └── v3_0/           # Contains v3 GNM model files (.npz)
+│   └── versions/           # Model specifications and catalog definitions
 ├── demos/                  # Interactive demo notebooks (.ipynb)
 ├── fitting_utils/          # Shared optimization helper functions
 ├── visualization/          # Rendering and camera projection utilities
@@ -102,8 +101,9 @@ cd gnm/gnm/shape
 
 ### Loading the GNM Model
 
-The core model can be loaded as follows. The necessary model data (`gnm.npz`)
-is included in this repository.
+The core model can be loaded as follows. Model weights are downloaded
+automatically on first use from remote CDNs (such as Hugging Face Hub or
+Kaggle Models) and cached locally (in `~/.cache/gnm/models/` by default).
 
 ```python
 from gnm.shape import gnm_numpy
@@ -111,8 +111,8 @@ from gnm.shape import semantic_sampler
 import numpy as np
 import trimesh # For visualization
 
-# Load the GNM head model.
-gnm = gnm_numpy.GNM.from_local(
+# Load the GNM head model (automatically downloads from CDN on first run).
+gnm = gnm_numpy.GNM.from_remote(
     version=gnm_numpy.GNMMajorVersion.V3,
     variant=gnm_numpy.GNMVariant.HEAD,
 )
@@ -242,8 +242,11 @@ relevant for the GNM v3.x.
 
 ## Model Data
 The GNM model data (e.g., `gnm_head.npz`) contains the template shape, identity
-basis, expression basis, skinning weights, and UV layout. This file is provided
-within the `gnm/shape/data/versions/v{MAJOR}_{MINOR}` directory.
+basis, expression basis, skinning weights, and UV layout. Rather than bloating
+the repository with large binary files, model weights are hosted on public
+CDNs (Hugging Face Hub and Kaggle Models) and downloaded via
+`GNM.from_remote(...)`. Downloaded models are cached locally in
+`~/.cache/gnm/models/` (or a custom directory specified via `cache_dir`).
 
 The Semantic Sampler models
 (`expression_decoder_model.h5`, `identity_decoder_model.h5`) are located

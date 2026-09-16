@@ -133,8 +133,8 @@ class GNM(gnm_base.GNMBase):
     del args, kwargs
     raise TypeError(
         f'{self.__class__.__name__} cannot be instantiated directly via'
-        ' constructor. Please use a class factory method such as from_local()'
-        ' or from_model_data().'
+        ' constructor. Please use a class factory method such as from_remote(),'
+        ' from_local(), or from_model_data().'
     )
 
   def __post_init__(self):

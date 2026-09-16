@@ -88,21 +88,6 @@ class GNMModelLoadingTest(parameterized.TestCase):
     super().setUp()
     gnm_data_loader.load_model_from_runfile.cache_clear()
 
-  @parameterized.product(
-      version=_MAINTAINED_MAJOR_GNM_VERSIONS,
-      variant=gnm_test_catalog.ALL_VARIANTS,
-  )
-  def test_load_model_from_runfile_successful(self, version, variant):
-    if variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-      # Convert string version/variant to Enums.
-      major_version = gnm_specs.GNMMajorVersion(version[1:])
-      gnm_variant = gnm_specs.GNMVariant(variant)
-
-      data = gnm_data_loader.load_model_from_runfile(major_version, gnm_variant)
-      self.assertIsInstance(data, dict)
-    else:
-      self.skipTest(f'Variant {variant} not available in version {version}')
-
   def test_load_model_from_runfile_fails_when_file_not_found(self):
     with mock.patch.object(
         gnm_data_loader,
