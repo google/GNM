@@ -24,6 +24,10 @@ from typing import Any, Self
 from etils import epath
 from gnm.shape import gnm_data_loader
 from gnm.shape.data.versions import gnm_specs
+try:
+  from warnings import deprecated  # pyrefly: ignore[import-error]
+except ImportError:
+  from typing_extensions import deprecated
 
 
 @dataclasses.dataclass(init=False)
@@ -34,14 +38,35 @@ class GNMBase(abc.ABC):
   variant: gnm_specs.GNMVariant
 
   @classmethod
+  @deprecated(
+      '`from_local()` is deprecated and will be removed in the next'
+      ' release. Please use `from_remote()` instead.',
+      category=None,
+  )
   def from_local(
       cls,
       version: gnm_specs.GNMMajorVersion,
       variant: gnm_specs.GNMVariant,
   ) -> Self:
-    """Creates a GNM instance from a local model file."""
-    data_dict = gnm_data_loader.load_model_from_runfile(version, variant)
-    return cls._from_model_data(data_dict)  # pyrefly: ignore[bad-return]
+    """Creates a GNM instance from a local model file.
+
+    Deprecated: `from_local()` is deprecated and will be removed in the next
+    release. Model weights are not packaged with the repository; please use
+    `from_remote()` instead. This method redirects to
+    `from_remote(..., source=GNMRemoteSource.HTTP)`.
+
+    Args:
+      version: GNM major version.
+      variant: GNM model variant.
+
+    Returns:
+      A GNM instance loaded with the model weights.
+    """
+    return cls.from_remote(
+        version=version,
+        variant=variant,
+        source=gnm_specs.GNMRemoteSource.HTTP,
+    )
 
   @classmethod
   def from_remote(

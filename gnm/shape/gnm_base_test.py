@@ -84,15 +84,20 @@ class GNMBaseTest(absltest.TestCase):
     self.assertEqual(new_gnm.version, _TEST_FULL_VERSION)
     self.assertEqual(new_gnm.variant, _TEST_VARIANT)
 
-  def test_from_local(self):
+  def test_from_local_deprecated_redirects_to_from_remote(self):
     with mock.patch.object(
-        gnm_data_loader,
-        'load_model_from_runfile',
-        return_value={'dummy': 1},
-    ) as mock_load:
+        DummyGNM,
+        'from_remote',
+        return_value=self.gnm,
+    ) as mock_from_remote:
       new_gnm = DummyGNM.from_local(_TEST_MAJOR_VERSION, _TEST_VARIANT)
-      self.assertIsInstance(new_gnm, DummyGNM)
-      mock_load.assert_called_once_with(_TEST_MAJOR_VERSION, _TEST_VARIANT)
+      self.assertEqual(new_gnm, self.gnm)
+      mock_from_remote.assert_called_once_with(
+          version=_TEST_MAJOR_VERSION,
+          variant=_TEST_VARIANT,
+          source=gnm_specs.GNMRemoteSource.HTTP,
+      )
+      self.assertTrue(hasattr(DummyGNM.from_local, '__deprecated__'))
 
   def test_from_remote_default_http(self):
     with mock.patch.object(

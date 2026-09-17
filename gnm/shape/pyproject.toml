@@ -40,6 +40,7 @@ dependencies = [
     "tqdm",
     "trimesh",
     "typeguard",    
+    "typing_extensions",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +79,6 @@ package-dir = {"gnm.shape" = "."}
 
 [tool.setuptools.package-data]
 "gnm.shape" = [
-    "data/**/*.npz",
     "data/**/*.png",
     "data/**/*.jpg",
     "data/**/*.md",
