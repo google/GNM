@@ -98,7 +98,7 @@ def _get_rng(rng: np.random.Generator | None) -> np.random.Generator:
 
 
 class ExpressionSampler:
-  """Samples expressions and identities from a Conditional VAE."""
+  """Samples expressions from a Conditional VAE."""
 
   def __init__(
       self,

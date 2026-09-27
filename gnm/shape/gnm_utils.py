@@ -261,7 +261,7 @@ def _regions_to_coefficients(
   coeffs = np.zeros(batch_shape + (coeffs_dim,), dtype=dtype)
   for region_name, values in regions.items():
     if region_name not in region_indices:
-      gnm_type_name = getattr(gnm, 'model_type', 'unknown')
+      gnm_type_name = getattr(gnm, 'variant', 'unknown')
       raise ValueError(f'No region {region_name} in model {gnm_type_name}.')
     else:
       coeffs[..., region_indices[region_name]] = values
@@ -401,7 +401,7 @@ def identity_regions_dims(gnm: gnm_numpy.GNM) -> dict[str, int]:
 def joint_rotations_to_regions(
     joint_rotations: np.ndarray, gnm: gnm_numpy.GNM
 ) -> dict[str, np.ndarray]:
-  """Splits the joint rotations ([A1, ..., An], J, 3]) to invidual regions."""
+  """Splits the joint rotations ([A1, ..., An], J, 3]) to individual regions."""
   validate_gnm(gnm)
   joint_names: list[str] = get_gnm_attribute(gnm, 'joint_names')
   if len(joint_names) != joint_rotations.shape[-2]:
