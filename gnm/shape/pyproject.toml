@@ -73,6 +73,7 @@ packages = [
     "gnm.shape.oss_data_loaders",
     "gnm.shape.visualization",
     "gnm.shape.visualization.integrators",
+    "gnm.shape.web",
 ]
 package-dir = {"gnm.shape" = "."}
 
