@@ -30,6 +30,7 @@ from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_typing
 from gnm.shape.data.versions import gnm_specs
+import immutabledict
 import numpy as np
 import numpy.typing as npt
 
@@ -37,6 +38,52 @@ enpt = gnm_typing.enpt
 
 _NONZERO_THRESHOLD = 1e-4
 _EPSILON = 1e-8
+
+# The prefixes `vertex_group_mask` understands on a vertex group name.
+_GROUP_OPERATORS = '|&-~'
+
+# The first UDIM tile, as defined by the Mari/OpenUSD UDIM convention: a tile
+# whose lower-left corner is at integer texture coordinate (u, v) is numbered
+# `1001 + u + 10 * v`, and tiles are laid out ten per row.
+UDIM_FIRST_TILE = 1001
+UDIM_TILES_PER_ROW = 10
+
+# The region of the mesh assigned to each UDIM tile.
+#
+# GNM's texture coordinates all lie in the unit square, and distinct surfaces
+# overlap there so that each can be given its own texture in tools like
+# Blender. The UDIM convention expresses the same intent in a standard,
+# interchangeable way by placing each surface in its own tile, which
+# additionally allows each tile to have its own resolution.
+#
+# Each key is a vertex group expression in the syntax accepted by
+# `GNM.vertex_group_mask`, so `'&name'` intersects and a bare name unions:
+#
+#   1001  skin                    1005  right eye, exterior
+#   1002  left eye, interior      1006  teeth and gums, upper and lower
+#   1003  left eye, exterior      1007  tongue
+#   1004  right eye, interior
+#
+# The eyes are split because an eye's interior lies entirely inside its
+# exterior in UV space, so a tile per eye would still hold two surfaces
+# competing for the same texels. The two teeth components are merged because
+# they are already disjoint in UV and so cost nothing to share.
+#
+# The table is fixed rather than derived from the order of
+# `mesh_component_names`, because that order differs between model variants
+# (the head and body variants swap `tongue` and `lower_teeth_and_gums`). A
+# fixed table keeps a region on the same tile, and so in the same texture
+# file, for every variant. Entries whose groups are absent from a variant are
+# skipped, which is how the hand model gets a single skin tile.
+UDIM_TILES = immutabledict.immutabledict({
+    ('skin',): 1001,
+    ('left_eye', '&eye_interiors'): 1002,
+    ('left_eye', '&eye_exteriors'): 1003,
+    ('right_eye', '&eye_interiors'): 1004,
+    ('right_eye', '&eye_exteriors'): 1005,
+    ('upper_teeth_and_gums', 'lower_teeth_and_gums'): 1006,
+    ('tongue',): 1007,
+})
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
@@ -77,8 +124,10 @@ class GNM(gnm_base.GNMBase):
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
-    quad_uvs: Texture coordinates per quad, (Q, 4, 2).
-    triangle_uvs: Texture coordinates per triangle, (T, 3, 2).
+    quad_uvs: Texture coordinates per quad, (Q, 4, 2). All regions share the
+      unit square and overlap there; prefer `quad_uvs_udim`.
+    triangle_uvs: Texture coordinates per triangle, (T, 3, 2). All regions share
+      the unit square and overlap there; prefer `triangle_uvs_udim`.
     mesh_component_names: The vertex group name corresponding to each separate
       mesh part.
     mirror_indices: The index of each vertex on the other side of the mesh.
@@ -101,6 +150,10 @@ class GNM(gnm_base.GNMBase):
     expression_dim: The dimensionality of the linear expression basis E.
     edge_list: The quad topology represented as a list of directed edges (E, 2).
     vertex_uvs: Per-vertex UV texture coordinates shaped (V, 2).
+    quad_udim_tiles: The UDIM tile number of each quad, (Q,).
+    triangle_udim_tiles: The UDIM tile number of each triangle, (T,).
+    quad_uvs_udim: Per-quad UDIM texture coordinates, (Q, 4, 2).
+    triangle_uvs_udim: Per-triangle UDIM texture coordinates, (T, 3, 2).
   """
 
   _shape_error_type = ValueError
@@ -637,6 +690,55 @@ class GNM(gnm_base.GNMBase):
   def vertex_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
     return self.vertex_uvs[self.vertex_group_indices(*names)]
 
+  @functools.cached_property
+  def quad_udim_tiles(self) -> npt.NDArray[np.int32]:
+    """The UDIM tile number of each quad, (Q,).
+
+    Each region of `UDIM_TILES` whose vertex groups this variant defines
+    claims the quads it covers. The regions are disjoint and, between them,
+    cover the whole mesh.
+
+    Raises:
+      ValueError: If two regions claim the same quad, or if some quad is
+        claimed by none and so cannot be assigned a tile.
+    """
+    return _assign_udim_tiles(self, self.quads)
+
+  @functools.cached_property
+  def triangle_udim_tiles(self) -> npt.NDArray[np.int32]:
+    """The UDIM tile number of each triangle, (T,).
+
+    The triangulated equivalent of `quad_udim_tiles`: each triangle lies in
+    the same region as the quad it was split from.
+
+    Raises:
+      ValueError: If two regions claim the same triangle, or if some triangle
+        is claimed by none and so cannot be assigned a tile.
+    """
+    return _assign_udim_tiles(self, self.triangles)
+
+  @functools.cached_property
+  def quad_uvs_udim(self) -> npt.NDArray[np.floating]:
+    """Per-quad texture coordinates in UDIM layout, (Q, 4, 2).
+
+    Unlike `quad_uvs`, which packs every surface into the unit square so that
+    surfaces overlap, these coordinates place each region of `UDIM_TILES` in
+    its own tile and therefore span more than the unit square.
+    """
+    return _offset_uvs_into_udim_tiles(
+        np.asarray(self.quad_uvs), self.quad_udim_tiles
+    )
+
+  @functools.cached_property
+  def triangle_uvs_udim(self) -> npt.NDArray[np.floating]:
+    """Per-triangle texture coordinates in UDIM layout, (T, 3, 2).
+
+    The triangulated equivalent of `quad_uvs_udim`.
+    """
+    return _offset_uvs_into_udim_tiles(
+        np.asarray(self.triangle_uvs), self.triangle_udim_tiles
+    )
+
   def compute_vertex_normals(
       self,
       vertices: enpt.FloatArray['A1 ... An V 3'],
@@ -650,7 +752,15 @@ class GNM(gnm_base.GNMBase):
       self,
       keep_vertices: enpt.IntArray['V_pruned'],  # pyrefly: ignore[unknown-name]
   ) -> None:
-    """Prunes model vertices in-place."""
+    """Prunes model vertices in-place.
+
+    Faces that lose a vertex are removed together with their texture
+    coordinates. Cached properties derived from the mesh are recomputed on next
+    access. `mirror_indices` is left unchanged.
+
+    Args:
+      keep_vertices: Indices of the vertices to keep, (V_pruned,).
+    """
     xnp = self.xnp
     num_vertices = self.num_vertices
     keep_vertices = xnp.asarray(keep_vertices, dtype=xnp.int32)
@@ -666,6 +776,12 @@ class GNM(gnm_base.GNMBase):
     )
     self.skinning_weights = gnm_common.take(
         self.skinning_weights, keep_vertices, axis=1, xnp=xnp
+    )
+    self.joint_regressor = gnm_common.take(
+        self.joint_regressor, keep_vertices, axis=1, xnp=xnp
+    )
+    self.vertex_groups = gnm_common.take(
+        self.vertex_groups, keep_vertices, axis=1, xnp=xnp
     )
 
     mapper = _scatter_indices(keep_vertices, num_vertices, xnp)
@@ -684,6 +800,12 @@ class GNM(gnm_base.GNMBase):
     self.triangles = gnm_common.take(
         triangles, triangle_indices, axis=0, xnp=xnp
     )
+    self.quad_uvs = gnm_common.take(
+        self.quad_uvs, quad_indices, axis=0, xnp=xnp
+    )
+    self.triangle_uvs = gnm_common.take(
+        self.triangle_uvs, triangle_indices, axis=0, xnp=xnp
+    )
 
     if self.pose_correctives_regressor is not None:
       pose_correctives = xnp.reshape(
@@ -696,6 +818,8 @@ class GNM(gnm_base.GNMBase):
       self.pose_correctives_regressor = xnp.reshape(
           pose_correctives, (-1, keep_vertices.shape[0] * 3)
       )
+
+    _clear_cached_properties(self)
 
 
 def _check_batch_dims(
@@ -754,3 +878,76 @@ def _scatter_indices(keep_vertices, num_vertices, xnp) -> Any:
     mapper = np.full((num_vertices,), -1, dtype=np.int32)
     mapper[keep_vertices] = np.arange(len(keep_vertices), dtype=np.int32)
     return mapper
+
+
+def _clear_cached_properties(obj: object) -> None:
+  """Drops every `functools.cached_property` value computed on `obj`."""
+  for cls in type(obj).__mro__:
+    for name, attribute in vars(cls).items():
+      if isinstance(attribute, functools.cached_property):
+        obj.__dict__.pop(name, None)
+
+
+def _assign_udim_tiles(
+    model: GNM, faces: npt.ArrayLike
+) -> npt.NDArray[np.int32]:
+  """Assigns each face the tile of the `UDIM_TILES` region it lies in.
+
+  Args:
+    model: The model whose vertex groups define the regions.
+    faces: The vertex indices of each face, (F, C), for F faces with C corners
+      each.
+
+  Returns:
+    The UDIM tile number of each face, (F,).
+
+  Raises:
+    ValueError: If two regions claim the same face, or if some face is claimed
+      by none and so cannot be assigned a tile.
+  """
+  faces = np.asarray(faces)
+  tiles = np.zeros(faces.shape[0], dtype=np.int32)
+  defined = set(model.vertex_group_names)
+  for groups, tile in UDIM_TILES.items():
+    if not all(g.lstrip(_GROUP_OPERATORS) in defined for g in groups):
+      continue
+    mask = model.vertex_group_mask(*groups)
+    indices = np.where(np.all(mask[faces], axis=-1))[0]
+    claimed = tiles[indices]
+    if np.any(claimed):
+      raise ValueError(
+          f'UDIM tile {tile} claims {int(np.count_nonzero(claimed))} faces '
+          f'already claimed by tile(s) {sorted(set(claimed[claimed != 0]))}. '
+          'The regions of UDIM_TILES must be disjoint.'
+      )
+    tiles[indices] = tile
+
+  num_unassigned = int(np.count_nonzero(tiles == 0))
+  if num_unassigned:
+    raise ValueError(
+        f'{num_unassigned} of {tiles.size} faces lie in no region of '
+        'UDIM_TILES, so they cannot be assigned a UDIM tile.'
+    )
+  return tiles
+
+
+def _offset_uvs_into_udim_tiles(
+    uvs: npt.NDArray[np.floating],
+    tiles: npt.NDArray[np.int32],
+) -> npt.NDArray[np.floating]:
+  """Translates per-face texture coordinates into their UDIM tiles.
+
+  Args:
+    uvs: Texture coordinates in the unit square, (F, C, 2), for F faces with C
+      corners each.
+    tiles: The UDIM tile number of each face, (F,).
+
+  Returns:
+    The texture coordinates offset into their tiles, (F, C, 2).
+  """
+  tile_indices = tiles - UDIM_FIRST_TILE
+  offsets = np.stack(
+      [tile_indices % UDIM_TILES_PER_ROW, tile_indices // UDIM_TILES_PER_ROW],
+      axis=-1,
+  ).astype(uvs.dtype)
+  return uvs + offsets[:, None, :]
