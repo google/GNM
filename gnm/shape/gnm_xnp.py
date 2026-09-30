@@ -650,7 +650,15 @@ class GNM(gnm_base.GNMBase):
       self,
       keep_vertices: enpt.IntArray['V_pruned'],  # pyrefly: ignore[unknown-name]
   ) -> None:
-    """Prunes model vertices in-place."""
+    """Prunes model vertices in-place.
+
+    Faces that lose a vertex are removed together with their texture
+    coordinates. Cached properties derived from the mesh are recomputed on next
+    access. `mirror_indices` is left unchanged.
+
+    Args:
+      keep_vertices: Indices of the vertices to keep, (V_pruned,).
+    """
     xnp = self.xnp
     num_vertices = self.num_vertices
     keep_vertices = xnp.asarray(keep_vertices, dtype=xnp.int32)
@@ -666,6 +674,12 @@ class GNM(gnm_base.GNMBase):
     )
     self.skinning_weights = gnm_common.take(
         self.skinning_weights, keep_vertices, axis=1, xnp=xnp
+    )
+    self.joint_regressor = gnm_common.take(
+        self.joint_regressor, keep_vertices, axis=1, xnp=xnp
+    )
+    self.vertex_groups = gnm_common.take(
+        self.vertex_groups, keep_vertices, axis=1, xnp=xnp
     )
 
     mapper = _scatter_indices(keep_vertices, num_vertices, xnp)
@@ -684,6 +698,12 @@ class GNM(gnm_base.GNMBase):
     self.triangles = gnm_common.take(
         triangles, triangle_indices, axis=0, xnp=xnp
     )
+    self.quad_uvs = gnm_common.take(
+        self.quad_uvs, quad_indices, axis=0, xnp=xnp
+    )
+    self.triangle_uvs = gnm_common.take(
+        self.triangle_uvs, triangle_indices, axis=0, xnp=xnp
+    )
 
     if self.pose_correctives_regressor is not None:
       pose_correctives = xnp.reshape(
@@ -696,6 +716,8 @@ class GNM(gnm_base.GNMBase):
       self.pose_correctives_regressor = xnp.reshape(
           pose_correctives, (-1, keep_vertices.shape[0] * 3)
       )
+
+    _clear_cached_properties(self)
 
 
 def _check_batch_dims(
@@ -754,3 +776,11 @@ def _scatter_indices(keep_vertices, num_vertices, xnp) -> Any:
     mapper = np.full((num_vertices,), -1, dtype=np.int32)
     mapper[keep_vertices] = np.arange(len(keep_vertices), dtype=np.int32)
     return mapper
+
+
+def _clear_cached_properties(obj: object) -> None:
+  """Drops every `functools.cached_property` value computed on `obj`."""
+  for cls in type(obj).__mro__:
+    for name, attribute in vars(cls).items():
+      if isinstance(attribute, functools.cached_property):
+        obj.__dict__.pop(name, None)

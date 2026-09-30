@@ -421,6 +421,47 @@ class GNMNumpyTest(parameterized.TestCase):
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
       variant=tuple(_SUPPORTED_VARIANTS),
   )
+  def test_prune_vertices(self, version: str, variant: str):
+    """Tests that pruning keeps all mesh data aligned with the kept vertices."""
+    if variant not in self.gnms[version]:
+      self.skipTest(f'variant {variant} not supported in {version}.')
+    gnm = self.gnms[version][variant]
+    pruned = copy.deepcopy(gnm)
+    _ = pruned.edge_list  # Populates a cache that pruning must invalidate.
+
+    x = gnm.template_vertex_positions[:, 0]
+    keep = np.flatnonzero(x >= np.median(x))
+    pruned.prune_vertices(keep)
+
+    new_index = np.full(gnm.num_vertices, -1)
+    new_index[keep] = np.arange(len(keep))
+    kept_quads = np.flatnonzero(np.all(new_index[gnm.quads] >= 0, axis=-1))
+    kept_triangles = np.flatnonzero(
+        np.all(new_index[gnm.triangles] >= 0, axis=-1)
+    )
+
+    np.testing.assert_array_equal(
+        pruned.quads, new_index[gnm.quads[kept_quads]]
+    )
+    np.testing.assert_array_equal(pruned.quad_uvs, gnm.quad_uvs[kept_quads])
+    np.testing.assert_array_equal(
+        pruned.triangles, new_index[gnm.triangles[kept_triangles]]
+    )
+    np.testing.assert_array_equal(
+        pruned.triangle_uvs, gnm.triangle_uvs[kept_triangles]
+    )
+    np.testing.assert_array_equal(
+        pruned.vertex_groups, gnm.vertex_groups[:, keep]
+    )
+    np.testing.assert_array_equal(
+        pruned.joint_regressor, gnm.joint_regressor[:, keep]
+    )
+    self.assertLess(pruned.edge_list.max(), pruned.num_vertices)
+
+  @parameterized.product(
+      version=_MAINTAINED_MAJOR_GNM_VERSIONS,
+      variant=tuple(_SUPPORTED_VARIANTS),
+  )
   def test_edge_list(self, version: str, variant: str):
     """Checks that the edge list matches the quad topology."""
     if variant not in self.gnms[version]:
