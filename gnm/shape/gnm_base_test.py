@@ -100,6 +100,16 @@ class GNMBaseTest(absltest.TestCase):
       )
       self.assertTrue(hasattr(DummyGNM.from_local, '__deprecated__'))
 
+  def test_from_custom_file(self):
+    with mock.patch.object(
+        gnm_data_loader,
+        'load_model_from_custom_file',
+        return_value={'dummy': 1},
+    ) as mock_load:
+      new_gnm = DummyGNM.from_custom_file('/path/to/custom_model.npz')
+      self.assertIsInstance(new_gnm, DummyGNM)
+      mock_load.assert_called_once_with('/path/to/custom_model.npz')
+
   def test_from_remote_default_http(self):
     with mock.patch.object(
         gnm_data_loader,

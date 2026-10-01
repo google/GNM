@@ -15,13 +15,25 @@
 """GNM data loader."""
 
 from collections.abc import Sequence
+import io
 from typing import Any
+import zipfile
+import zlib
 
+from absl import logging
 from etils import epath
 from gnm.shape import gnm_data_schema
 from gnm.shape.data.versions import gnm_models_catalog
 from gnm.shape.data.versions import gnm_specs
 import numpy as np
+
+
+class GNMModelIntegrityError(ValueError):
+  """Raised when a GNM model file is corrupted or malformed.
+
+  For example, truncated downloads or files that are not valid .npz archives.
+  """
+
 
 _VARIANT_TO_MODEL_FILE_NAME_MAP = (
     gnm_models_catalog.VARIANT_TO_MODEL_FILE_NAME_MAP
@@ -66,8 +78,7 @@ def _load_model_dict_from_file(
     variant: gnm_specs.GNMVariant,
 ) -> dict[str, Any]:
   """Loads and standardizes model dict from a local file path."""
-  with model_file.open('rb') as f:
-    data_dict = dict(np.load(f))
+  data_dict = _parse_npz_bytes(model_file.read_bytes(), str(model_file))
 
   del version, variant
 
@@ -96,6 +107,121 @@ def load_model_from_remote(
   """Loads GNM model data from a remote source."""
   from gnm.shape.oss_data_loaders import oss_data_loaders  # pylint: disable=g-import-not-at-top,import-outside-toplevel
   return oss_data_loaders.load_model_from_remote(version, variant, **kwargs)
+def load_model_from_custom_file(
+    model_file: epath.PathLike,
+) -> dict[str, Any]:
+  """Loads GNM model data from a custom file path.
+
+  Args:
+    model_file: The path to the GNM model file (.npz) as Path or str.
+
+  Returns:
+    A dictionary of GNM data.
+
+  Raises:
+    GNMModelIntegrityError: If the file is corrupted or not a valid .npz
+      archive.
+    ValueError: If the file does not exist or if required fields are missing.
+  """
+  model_file = epath.Path(model_file)
+  if not model_file.exists():
+    raise ValueError(f'The GNM model file "{model_file}" not found.')
+
+  return _load_custom_gnm_data_from_bytes(
+      model_file.read_bytes(), str(model_file)
+  )
+
+
+def _parse_npz_bytes(
+    model_bytes: bytes,
+    model_file_str: str,
+) -> dict[str, Any]:
+  """Parses .npz bytes into a dict of arrays, rejecting malformed files.
+
+  Pickled (object) arrays are never loaded. Reading every archive member also
+  validates the per-member CRC-32 stored in the zip archive.
+
+  Args:
+    model_bytes: The raw content of the model file.
+    model_file_str: The path of the model file, used in messages.
+
+  Returns:
+    A dictionary mapping array names to NumPy arrays.
+
+  Raises:
+    GNMModelIntegrityError: If the content is not a valid .npz archive, or
+      contains pickled data.
+  """
+  try:
+    with io.BytesIO(model_bytes) as f:
+      loaded = np.load(f, allow_pickle=False)
+      if isinstance(loaded, np.ndarray):
+        raise GNMModelIntegrityError(
+            f'The GNM model file "{model_file_str}" is a single .npy array, not'
+            ' an .npz archive.'
+        )
+      with loaded:
+        return {k: loaded[k] for k in loaded.files}
+  except GNMModelIntegrityError:
+    raise
+  except (
+      zipfile.BadZipFile,
+      zlib.error,
+      EOFError,
+      OSError,
+      ValueError,
+  ) as e:
+    raise GNMModelIntegrityError(
+        f'The GNM model file "{model_file_str}" is corrupted, contains pickled'
+        f' data, or is not a valid .npz archive: {e}'
+    ) from e
+
+
+def _load_custom_gnm_data_from_bytes(
+    model_bytes: bytes,
+    model_file_str: str,
+) -> dict[str, Any]:
+  """Parses, validates and standardizes custom GNM model content."""
+  data_dict = _parse_npz_bytes(model_bytes, model_file_str)
+  return _validate_and_standardize_custom_gnm_data(data_dict, model_file_str)
+
+
+def _validate_and_standardize_custom_gnm_data(
+    data_dict: dict[str, Any],
+    model_file_str: str,
+) -> dict[str, Any]:
+  """Validates and standardizes GNM data loaded from a custom model file.
+
+  Missing fields raise an error, whereas extra fields are dropped with a
+  warning.
+
+  Args:
+    data_dict: The raw GNM data dict loaded from the custom model file.
+    model_file_str: The path of the custom model file, used in messages.
+
+  Returns:
+    The validated and standardized GNM data dict.
+
+  Raises:
+    ValueError: If the data dict is missing required fields, or if its version
+      or variant is unknown.
+  """
+  _, missing, extra = _validate_gnm_data(data_dict)
+  if missing:
+    raise ValueError(
+        f'Failed to load the custom GNM model data from "{model_file_str}".'
+        f' Missing fields: {missing}.'
+    )
+  if extra:
+    logging.warning(
+        'The custom GNM model file "%s" contains extra fields which will be'
+        ' ignored: %s.',
+        model_file_str,
+        ','.join(extra),
+    )
+    data_dict = {k: v for k, v in data_dict.items() if k not in extra}
+
+  return _standardize_gnm_data_types(data_dict)
 
 
 def _validate_gnm_data(
