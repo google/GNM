@@ -62,7 +62,6 @@ dev = [
     "pytest",
     "pylint",
     "mediapy",
-    "tensorflow-graphics",
 ]
 
 [tool.setuptools]

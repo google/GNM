@@ -32,11 +32,6 @@ from gnm.shape import gnm_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import numpy as np
 from scipy.spatial import transform as transform_module
-
-try:
-  from tensorflow_graphics.geometry.representation.mesh import normals as tf_normals
-except ImportError:
-  tf_normals = None
 import trimesh
 from trimesh import transformations
 
@@ -1005,17 +1000,23 @@ class GNMNumpyTest(parameterized.TestCase):
     vertices = gnm_np(**parameters)
     vertex_normals = gnm_np.compute_vertex_normals(vertices)
 
-    if tf_normals is None:
-      self.skipTest('tensorflow_graphics not available on this platform.')
-
-    triangles_batch = np.broadcast_to(
-        gnm_np.triangles, (*batch_dims, *gnm_np.triangles.shape)
-    ).astype(np.int32)
-    vertex_normals_tf = tf_normals.vertex_normals(
-        vertices=vertices,
-        indices=triangles_batch,
-    ).numpy()
-    np.testing.assert_allclose(vertex_normals, vertex_normals_tf, atol=1e-6)
+    # Reference: the normalized sum of the area-weighted normals (i.e. the
+    # unnormalized cross products) of the triangles around each vertex.
+    # `trimesh.geometry.weighted_vertex_normals` is not used because it weights
+    # the face normals by the corner angle rather than by the area of the face.
+    expected_normals = []
+    for mesh_vertices in vertices.reshape(-1, gnm_np.num_vertices, 3):
+      corners = mesh_vertices[gnm_np.triangles]
+      face_normals = np.cross(
+          corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+      )
+      expected_normals.append(
+          trimesh.geometry.mean_vertex_normals(
+              gnm_np.num_vertices, gnm_np.triangles, face_normals
+          )
+      )
+    expected_normals = np.reshape(expected_normals, vertex_normals.shape)
+    np.testing.assert_allclose(vertex_normals, expected_normals, atol=1e-6)
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
