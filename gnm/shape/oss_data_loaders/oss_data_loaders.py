@@ -22,7 +22,6 @@ consumption, see https://github.com/google/GNM.
 
 # pylint: disable=protected-access
 
-import functools
 import importlib
 import os
 from typing import Any
@@ -182,7 +181,6 @@ def _resolve_kaggle_model_file(
   return result_path
 
 
-@functools.lru_cache
 def load_model_from_remote(
     version: gnm_specs.GNMMajorVersion,
     variant: gnm_specs.GNMVariant,
@@ -251,7 +249,6 @@ def load_model_from_remote(
   )
 
 
-@functools.lru_cache
 def load_model_from_huggingface(
     version: gnm_specs.GNMMajorVersion,
     variant: gnm_specs.GNMVariant,
@@ -269,7 +266,6 @@ def load_model_from_huggingface(
   )
 
 
-@functools.lru_cache
 def load_model_from_kaggle(
     version: gnm_specs.GNMMajorVersion,
     variant: gnm_specs.GNMVariant,

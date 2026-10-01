@@ -19,6 +19,7 @@ from __future__ import annotations
 import abc
 import collections
 from collections.abc import Mapping, Sequence
+import copy
 import dataclasses
 import functools
 from typing import Any, Self
@@ -245,18 +246,25 @@ class GNM(gnm_base.GNMBase):
     )
 
   def to_numpy_data_dict(self) -> dict[str, Any]:
-    """Returns a dictionary of the GNM data represented as NumPy arrays."""
+    """Returns a dictionary of the GNM data represented as NumPy arrays.
+
+    All values are copies, so modifying the returned dict (or a GNM created from
+    it with `from_gnm()`) never affects this instance, and vice versa.
+    """
     data_dict = {}
     for field in dataclasses.fields(self):
       val = getattr(self, field.name)
       if enp.lazy.is_array(val):
-        # Convert JAX, PyTorch or TF tensors to numpy.
+        # Convert JAX, PyTorch or TF tensors to numpy. `Tensor.numpy()` may
+        # share memory with the tensor, and NumPy arrays are the instance's own
+        # buffers, so `np.array` makes the copy.
         if enp.lazy.is_tf(val):
           val = val.numpy()
-        elif enp.lazy.is_jax(val):
-          val = np.array(val)
         elif enp.lazy.is_torch(val):
           val = val.detach().cpu().numpy()
+        val = np.array(val)
+      else:
+        val = copy.deepcopy(val)
       data_dict[field.name] = val
     return data_dict
 

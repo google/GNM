@@ -16,9 +16,12 @@
 
 # pylint: disable=protected-access
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape import gnm_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import numpy as np
@@ -36,24 +39,38 @@ _UPPER_BODY_VARIANTS = frozenset()
 
 
 class BaseGNMUtilsTest(parameterized.TestCase):
+  """Base class loading the GNMs on demand.
 
-  gnms: dict[str, dict[str, gnm_numpy.GNM]]
+  Attributes:
+    gnms: The GNMs, by version and variant.
+    uses_model_pairs: Whether tests use two models of the same version at once.
+      If so, all the models of a version are kept in memory, rather than one.
+  """
+
+  gnms: gnm_test_utils.LazyGNMDict[gnm_numpy.GNM]
+  uses_model_pairs: bool = False
 
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    # Cache GNM instances to speed up tests
-    cls.gnms = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        cls.gnms[version][variant] = gnm_numpy.GNM.from_remote(
-            gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-            gnm_numpy.GNMVariant(variant),
-        )
+    variants_by_version = {
+        version: _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+        for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+    }
+    if cls.uses_model_pairs:
+      max_loaded = max(len(v) for v in variants_by_version.values())
+    else:
+      max_loaded = 1
+    cls.gnms = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        variants_by_version,
+        max_loaded=max_loaded,
+    )
+    cls.addClassCleanup(cls.gnms.clear)
 
 
 class GNMUtilsConversionTest(BaseGNMUtilsTest):
+  uses_model_pairs = True
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
@@ -643,4 +660,4 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())
