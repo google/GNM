@@ -82,8 +82,9 @@ def render_gnm(
       array of triangle indices.
     texture: Optional texture map(s) for GNM. If None, no texture will be used.
       Defaults to an edge-flow texture. If given as a single array, this will be
-      used for the skin only. If given as a dictionary, then the keys should be
-      GNM part names, and the values should be arrays. All arrays should be
+      used for the skin UDIM tile only. If given as a mapping, then the keys
+      should be UDIM tile numbers (see `gnm_numpy.UDIM_TILES`; GNM part names
+      are deprecated), and the values should be arrays. All arrays should be
       float32 [0-1], (..., H, W, 3).
     multisample_antialiasing: Internally render with e.g., double resolution,
       and then downsample for anti-aliasing.

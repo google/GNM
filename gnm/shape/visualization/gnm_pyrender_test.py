@@ -72,18 +72,13 @@ class GNMPyrenderTest(parameterized.TestCase):
     vertices = gnm_np.template_vertex_positions[None, :, :]
     vertices = self.broadcast(vertices, num_frames)
 
-    triangles = {
-        component_name: gnm_np.triangles_group(component_name)
-        for component_name in gnm_np.mesh_component_names
-    }
-
     color = gnm_pyrender.render(
         vertices=vertices,
-        triangles=triangles,
+        triangles=gnm_np.triangles,
         world_to_camera=self.broadcast(self.world_to_camera, num_frames),
         camera_to_image=self.broadcast(self.camera_to_image, num_frames),
         vertex_normals=gnm_np.compute_vertex_normals(vertices),
-        vertex_uvs=gnm_np.vertex_uvs,
+        triangle_uvs=gnm_np.triangle_uvs_udim,
         vertex_colors=np.ones_like(vertices),
     )
     self.assertEqual(color.shape, (num_frames, 320, 240, 3))
