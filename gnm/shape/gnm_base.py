@@ -96,6 +96,25 @@ class GNMBase(abc.ABC):
     return cls._from_model_data(data_dict)
 
   @classmethod
+  def from_custom_file(
+      cls,
+      model_file: epath.PathLike,
+  ) -> Self:
+    """Creates a GNM instance from a custom model file.
+
+    The model file content is always validated (it must be a valid .npz
+    archive with all the expected GNM attributes).
+
+    Args:
+      model_file: Path to the GNM model file (.npz) as Path or str.
+
+    Returns:
+      A GNM instance loaded with the model weights.
+    """
+    data_dict = gnm_data_loader.load_model_from_custom_file(model_file)
+    return cls._from_model_data(data_dict)
+
+  @classmethod
   def from_gnm(cls, gnm: GNMBase) -> Self:
     """Creates a GNM instance from another GNM instance."""
     data_dict = gnm.to_numpy_data_dict()
