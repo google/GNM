@@ -256,6 +256,10 @@ basis, expression basis, skinning weights, and UV layout. The model weights are
 hosted on public CDNs (Hugging Face Hub and Kaggle Models) and downloaded via
 `GNM.from_remote(...)`. Downloaded models are cached locally in
 `~/.cache/gnm/models/` (or a custom directory specified via `cache_dir`).
+Loaded models are not cached in memory: every `from_*` call (except `from_gnm`)
+reads the model file again and returns a new, independent instance. To reuse a
+model, keep the returned instance (or create backend conversions from it with
+`from_gnm`).
 
 The Semantic Sampler models
 (`expression_decoder_model.h5`, `identity_decoder_model.h5`) are located
