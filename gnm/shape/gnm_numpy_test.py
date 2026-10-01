@@ -18,6 +18,7 @@
 
 from collections.abc import Sequence
 import copy
+import functools
 import itertools
 import re
 import time
@@ -26,15 +27,11 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape import gnm_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import numpy as np
 from scipy.spatial import transform as transform_module
-
-try:
-  from tensorflow_graphics.geometry.representation.mesh import normals as tf_normals
-except ImportError:
-  tf_normals = None
 import trimesh
 from trimesh import transformations
 
@@ -140,20 +137,24 @@ def get_eye_test_cases():
 
 
 class GNMNumpyTest(parameterized.TestCase):
-  gnms: dict[str, dict[str, gnm_numpy.GNM]]
+  gnms: gnm_test_utils.LazyGNMDict[gnm_numpy.GNM]
 
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        if variant in _SUPPORTED_VARIANTS:
-          cls.gnms[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
+    # Load the models on demand, keeping one in memory at a time.
+    cls.gnms = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        variants_by_version={
+            version: [
+                variant
+                for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+                if variant in _SUPPORTED_VARIANTS
+            ]
+            for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+        },
+    )
+    cls.addClassCleanup(cls.gnms.clear)
 
   def setUp(self):
     super().setUp()
@@ -427,23 +428,19 @@ class GNMNumpyTest(parameterized.TestCase):
       self.skipTest(f'variant {variant} not supported in {version}.')
     gnm_np = self.gnms[version][variant]
 
-    # We build two adjacency matrices, one for the quads, and one for the edge
-    # list, and check they are the same.
-    num_vertices = gnm_np.num_vertices
-    adjacency_matrix_quads = np.zeros((num_vertices, num_vertices), dtype=bool)
-    adjacency_matrix_edge_list = adjacency_matrix_quads.copy()
-
-    for v1, v2, v3, v4 in gnm_np.quads:
-      adjacency_matrix_quads[v1, v2] = adjacency_matrix_quads[v2, v1] = True
-      adjacency_matrix_quads[v2, v3] = adjacency_matrix_quads[v3, v2] = True
-      adjacency_matrix_quads[v3, v4] = adjacency_matrix_quads[v4, v3] = True
-      adjacency_matrix_quads[v4, v1] = adjacency_matrix_quads[v1, v4] = True
-
-    for v1, v2 in gnm_np.edge_list:
-      adjacency_matrix_edge_list[v1, v2] = True
+    # Every quad side must appear in the edge list in both directions, and the
+    # edge list must not contain any other edge. Compare the sets of unique
+    # directed edges rather than dense (V, V) adjacency matrices, which take
+    # several GiB of memory for the larger models.
+    quads = np.asarray(gnm_np.quads)
+    quad_edges = np.concatenate(
+        [quads[:, [i, (i + 1) % 4]] for i in range(4)], axis=0
+    )
+    quad_edges = np.concatenate([quad_edges, quad_edges[:, ::-1]], axis=0)
 
     np.testing.assert_array_equal(
-        adjacency_matrix_quads, adjacency_matrix_edge_list
+        np.unique(np.asarray(gnm_np.edge_list), axis=0),
+        np.unique(quad_edges, axis=0),
     )
 
   @parameterized.parameters(get_group_subsets_test_cases())
@@ -1002,17 +999,21 @@ class GNMNumpyTest(parameterized.TestCase):
     vertices = gnm_np(**parameters)
     vertex_normals = gnm_np.compute_vertex_normals(vertices)
 
-    if tf_normals is None:
-      self.skipTest('tensorflow_graphics not available on this platform.')
-
-    triangles_batch = np.broadcast_to(
-        gnm_np.triangles, (*batch_dims, *gnm_np.triangles.shape)
-    ).astype(np.int32)
-    vertex_normals_tf = tf_normals.vertex_normals(
-        vertices=vertices,
-        indices=triangles_batch,
-    ).numpy()
-    np.testing.assert_allclose(vertex_normals, vertex_normals_tf, atol=1e-6)
+    # Reference: the normalized sum of the area-weighted normals (i.e. the
+    # unnormalized cross products) of the triangles around each vertex.
+    expected_normals = []
+    for mesh_vertices in vertices.reshape(-1, gnm_np.num_vertices, 3):
+      corners = mesh_vertices[gnm_np.triangles]
+      face_normals = np.cross(
+          corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+      )
+      expected_normals.append(
+          trimesh.geometry.mean_vertex_normals(
+              gnm_np.num_vertices, gnm_np.triangles, face_normals
+          )
+      )
+    expected_normals = np.reshape(expected_normals, vertex_normals.shape)
+    np.testing.assert_allclose(vertex_normals, expected_normals, atol=1e-6)
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
@@ -1080,4 +1081,4 @@ class GNMNumpyFactoryMethodsTest(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())

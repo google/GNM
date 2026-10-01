@@ -14,6 +14,7 @@
 
 """Tests for GNM JAX implementation."""
 
+import functools
 from typing import Any
 
 from absl.testing import absltest
@@ -21,6 +22,7 @@ from absl.testing import parameterized
 from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_jax
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import jax
 import jax.numpy as jnp
@@ -46,8 +48,20 @@ DTYPE_TO_DECIMAL = {
 }
 
 
+_VARIANTS_BY_VERSION = {
+    version: [
+        variant
+        for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+        if variant in _SUPPORTED_VARIANTS
+    ]
+    for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+}
+
+
 class GNMJaxTest(parameterized.TestCase):
   rng: np.random.Generator
+  gnms_np: gnm_test_utils.LazyGNMDict[gnm_numpy.GNM]
+  gnms_jax: gnm_test_utils.LazyGNMDict[gnm_jax.GNM]
 
   @classmethod
   def setUpClass(cls):
@@ -55,21 +69,17 @@ class GNMJaxTest(parameterized.TestCase):
 
     cls.rng = np.random.default_rng(0)
 
-    cls.gnms_np = {}
-    cls.gnms_jax = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms_np[version] = {}
-      cls.gnms_jax[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        if variant in [v.value for v in _SUPPORTED_VARIANTS]:
-          cls.gnms_np[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
-          cls.gnms_jax[version][variant] = gnm_jax.GNM.from_remote(
-              gnm_jax.GNMMajorVersion(version.removeprefix('v')),
-              gnm_jax.GNMVariant(variant),
-          )
+    # Load the models on demand, keeping one of each in memory at a time.
+    cls.gnms_np = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        _VARIANTS_BY_VERSION,
+    )
+    cls.addClassCleanup(cls.gnms_np.clear)
+    cls.gnms_jax = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_jax.GNM),
+        _VARIANTS_BY_VERSION,
+    )
+    cls.addClassCleanup(cls.gnms_jax.clear)
 
   def _get_default_kwargs(
       self, gnm_np: gnm_numpy.GNM, n_batch: int = 1
@@ -490,4 +500,4 @@ class GNMJaxFactoryMethodsTest(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())
