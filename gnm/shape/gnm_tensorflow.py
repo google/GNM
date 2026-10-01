@@ -53,7 +53,7 @@ GNMLandmarksType = gnm_landmarks.GNMLandmarksType
 GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 
-@dataclasses.dataclass(frozen=False, kw_only=True, init=False)
+@dataclasses.dataclass(frozen=True, kw_only=True, init=False)
 class GNM(gnm_xnp.GNM):
   """TensorFlow batched implementation of the GNM parametric model.
 

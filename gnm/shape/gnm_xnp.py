@@ -39,7 +39,7 @@ _NONZERO_THRESHOLD = 1e-4
 _EPSILON = 1e-8
 
 
-@dataclasses.dataclass(frozen=False, kw_only=True, init=False)
+@dataclasses.dataclass(frozen=True, kw_only=True, init=False)
 class GNM(gnm_base.GNMBase):
   """Backend-agnostic implementation of the GNM parametric model.
 

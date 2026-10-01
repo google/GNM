@@ -54,7 +54,7 @@ GNMRemoteSource = gnm_specs.GNMRemoteSource
 _rotation_matrix = gnm_common.axis_angle_to_rotation_matrix
 
 
-@dataclasses.dataclass(frozen=False, kw_only=True, init=False)
+@dataclasses.dataclass(frozen=True, kw_only=True, init=False)
 class GNM(gnm_xnp.GNM):
   """NumPy implementation of the GNM parametric model.
 
