@@ -169,6 +169,93 @@ class OSSDataLoadersTest(parameterized.TestCase):
       self.assertIsInstance(data3, dict)
       self.assertEqual(mock_download.call_count, 2)
 
+  def test_load_model_from_remote_force_download_is_always_honored(self):
+    def _fake_download(url, dest):
+      del url
+      dest.parent.mkdir(parents=True, exist_ok=True)
+      dest.write_bytes(self.dummy_npz_bytes)
+      return dest
+
+    with mock.patch.object(
+        oss_data_loaders, '_download_file', side_effect=_fake_download
+    ) as mock_download:
+      for expected_call_count in (1, 2, 3):
+        oss_data_loaders.load_model_from_remote(
+            gnm_specs.GNMMajorVersion.V3,
+            gnm_specs.GNMVariant.HEAD,
+            cache_dir=self.temp_dir,
+            force_download=True,
+        )
+        self.assertEqual(mock_download.call_count, expected_call_count)
+
+      # A non-forced load reuses the downloaded file.
+      oss_data_loaders.load_model_from_remote(
+          gnm_specs.GNMMajorVersion.V3,
+          gnm_specs.GNMVariant.HEAD,
+          cache_dir=self.temp_dir,
+      )
+      self.assertEqual(mock_download.call_count, 3)
+
+  @parameterized.named_parameters(
+      (
+          'huggingface',
+          'load_model_from_huggingface',
+          '_resolve_huggingface_model_file',
+      ),
+      ('kaggle', 'load_model_from_kaggle', '_resolve_kaggle_model_file'),
+  )
+  def test_force_download_is_always_honored_by_wrappers(
+      self, loader_name, resolver_name
+  ):
+    dest_file = self.temp_dir / 'v3_0' / 'gnm_head.npz'
+    dest_file.parent.mkdir(parents=True, exist_ok=True)
+    dest_file.write_bytes(self.dummy_npz_bytes)
+    loader = getattr(oss_data_loaders, loader_name)
+
+    with mock.patch.object(
+        oss_data_loaders, resolver_name, return_value=dest_file
+    ) as mock_resolve:
+      for _ in range(2):
+        loader(
+            gnm_specs.GNMMajorVersion.V3,
+            gnm_specs.GNMVariant.HEAD,
+            cache_dir=self.temp_dir,
+            force_download=True,
+        )
+
+    self.assertEqual(
+        mock_resolve.call_args_list,
+        [
+            mock.call(
+                gnm_specs.GNMMajorVersion.V3,
+                gnm_specs.GNMVariant.HEAD,
+                self.temp_dir,
+                True,
+            )
+        ]
+        * 2,
+    )
+
+  def test_load_model_from_remote_returns_independent_data(self):
+    dest_cache_file = self.temp_dir / 'v3_0' / 'gnm_head.npz'
+    dest_cache_file.parent.mkdir(parents=True, exist_ok=True)
+    dest_cache_file.write_bytes(self.dummy_npz_bytes)
+
+    data1 = oss_data_loaders.load_model_from_remote(
+        gnm_specs.GNMMajorVersion.V3,
+        gnm_specs.GNMVariant.HEAD,
+        cache_dir=self.temp_dir,
+    )
+    data1['joint_names'].append('leaked_joint')
+    data2 = oss_data_loaders.load_model_from_remote(
+        gnm_specs.GNMMajorVersion.V3,
+        gnm_specs.GNMVariant.HEAD,
+        cache_dir=self.temp_dir,
+    )
+
+    self.assertIsNot(data1, data2)
+    self.assertNotIn('leaked_joint', data2['joint_names'])
+
   def test_load_model_from_remote_with_str_cache_dir(self):
     dest_cache_file = self.temp_dir / 'v3_0' / 'gnm_head.npz'
 

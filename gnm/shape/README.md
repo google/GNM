@@ -127,6 +127,18 @@ mesh = trimesh.Trimesh(vertices=template_vertices, faces=faces, process=False)
 mesh.export("template_face.obj")
 ```
 
+### Loading a GNM Model from a Custom File
+
+A GNM model can also be loaded from a local `.npz` model file (e.g. one that
+you downloaded manually). The file content is always validated: it must be a
+valid `.npz` archive (pickled arrays are never loaded) containing all the GNM
+model fields; unknown extra fields are ignored with a warning. A corrupted or
+malformed file raises `gnm_data_loader.GNMModelIntegrityError`.
+
+```python
+gnm = gnm_numpy.GNM.from_custom_file("/path/to/gnm_head.npz")
+```
+
 ### Basic Parameter Manipulation
 You can generate a mesh by providing parameters for identity, expression,
 joint rotations, and translation.
@@ -246,6 +258,9 @@ basis, expression basis, skinning weights, and UV layout. The model weights are
 hosted on public CDNs (Hugging Face Hub and Kaggle Models) and downloaded via
 `GNM.from_remote(...)`. Downloaded models are cached locally in
 `~/.cache/gnm/models/` (or a custom directory specified via `cache_dir`).
+Loaded models are not cached in memory: every `from_*` call reads the model file
+again and returns a new, independent instance. To reuse a model, keep the
+returned instance (or create backend conversions from it with `from_gnm`).
 
 The Semantic Sampler models
 (`expression_decoder_model.h5`, `identity_decoder_model.h5`) are located

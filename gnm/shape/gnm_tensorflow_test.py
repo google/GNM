@@ -14,6 +14,7 @@
 
 """Tests for GNM TensorFlow implementation."""
 
+import functools
 import itertools
 from typing import Any
 
@@ -37,6 +38,15 @@ _MAJOR_VERSION_TO_VARIANTS_MAP = gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP
 BATCH_DIMS = [tuple(), tuple([1]), tuple([1, 2]), tuple([2, 1, 2])]
 
 
+@functools.cache
+def _load_gnm_np(version: str, variant: str) -> gnm_numpy.GNM:
+  """Loads a NumPy GNM once and shares it across test classes."""
+  return gnm_numpy.GNM.from_remote(
+      gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
+      gnm_numpy.GNMVariant(variant),
+  )
+
+
 class GNMTensorflowTest(parameterized.TestCase):
   rng: np.random.Generator
 
@@ -54,10 +64,9 @@ class GNMTensorflowTest(parameterized.TestCase):
       cls.gnms_tf[version] = {}
       for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
         if variant in [v.value for v in _SUPPORTED_VARIANTS]:
-          cls.gnms_np[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
+          # The GNM loaders don't cache models, so the NumPy reference models
+          # are shared across test classes to keep the test memory down.
+          cls.gnms_np[version][variant] = _load_gnm_np(version, variant)
           cls.gnms_tf[version][variant] = gnm_tensorflow.GNM.from_remote(
               gnm_tensorflow.GNMMajorVersion(version.removeprefix('v')),
               gnm_tensorflow.GNMVariant(variant),
