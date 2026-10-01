@@ -78,6 +78,108 @@ class GNMDataTest(parameterized.TestCase):
       print(f'  {version.name}: {version.value}')
 
 
+class GNMCustomFileLoadingTest(parameterized.TestCase):
+  """Tests for loading GNM model data from custom files."""
+
+  def setUp(self):
+    super().setUp()
+    self.temp_dir = epath.Path(self.create_tempdir().full_path)
+
+  def _write_model(self, name: str = 'model.npz', **overrides) -> epath.Path:
+    """Writes a valid dummy GNM model file, optionally overriding fields."""
+    local_path = self.temp_dir / name
+    np.savez(local_path, **(_get_dummy_gnm_data_dict() | overrides))
+    return local_path
+
+  @parameterized.named_parameters(
+      ('path', epath.Path),
+      ('str', str),
+  )
+  def test_load_model_from_custom_file_successful(self, path_type):
+    """Exercises successful load_model_from_custom_file."""
+    local_path = self._write_model()
+
+    data = gnm_data_loader.load_model_from_custom_file(path_type(local_path))
+
+    self.assertIsInstance(data, dict)
+    self.assertEqual(data['version'], gnm_specs.GNMVersion('3.0'))
+    self.assertEqual(data['variant'], gnm_specs.GNMVariant.HEAD)
+
+  def test_load_model_from_custom_file_drops_extra_fields(self):
+    local_path = self._write_model(extra_field=np.zeros((1,)))
+
+    data = gnm_data_loader.load_model_from_custom_file(local_path)
+
+    self.assertNotIn('extra_field', data)
+
+  def test_load_model_from_custom_file_fails_when_file_not_found(self):
+    with self.assertRaisesRegex(ValueError, 'not found'):
+      gnm_data_loader.load_model_from_custom_file(
+          self.temp_dir / 'non_existent.npz'
+      )
+
+  def test_load_model_from_custom_file_fails_for_missing_fields(self):
+    local_path = self.temp_dir / 'invalid_model.npz'
+    np.savez(local_path, some_key='some_value')
+
+    with self.assertRaisesRegex(ValueError, "Missing fields:.*'version'"):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+  def test_load_model_from_custom_file_fails_for_unknown_version(self):
+    local_path = self._write_model(version='99.0')
+
+    with self.assertRaisesRegex(ValueError, 'Unknown GNM version: 99.0'):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+  def test_load_model_from_custom_file_fails_for_crc_mismatch(self):
+    # A large (uncompressed) array makes the middle of the file array data.
+    local_path = self._write_model(
+        template_vertex_positions=np.zeros((10_000, 3))
+    )
+    content = bytearray(local_path.read_bytes())
+    content[len(content) // 2] ^= 0xFF
+    local_path.write_bytes(bytes(content))
+
+    with self.assertRaisesRegex(
+        gnm_data_loader.GNMModelIntegrityError, 'corrupted'
+    ):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+  @parameterized.named_parameters(
+      ('empty', lambda content: b''),
+      ('truncated', lambda content: content[: len(content) // 2]),
+      ('not_an_archive', lambda content: b'not a GNM model file'),
+  )
+  def test_load_model_from_custom_file_fails_for_corrupted_file(
+      self, corrupt_fn
+  ):
+    local_path = self._write_model()
+    local_path.write_bytes(corrupt_fn(local_path.read_bytes()))
+
+    with self.assertRaises(gnm_data_loader.GNMModelIntegrityError):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+  def test_load_model_from_custom_file_fails_for_single_npy_array(self):
+    local_path = self.temp_dir / 'model.npz'
+    with local_path.open('wb') as f:
+      np.save(f, np.zeros((3,)))
+
+    with self.assertRaisesRegex(
+        gnm_data_loader.GNMModelIntegrityError, 'not an .npz archive'
+    ):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+  def test_load_model_from_custom_file_does_not_load_pickled_arrays(self):
+    local_path = self._write_model(
+        extra_field=np.array([{'malicious': 'payload'}], dtype=object)
+    )
+
+    with self.assertRaisesRegex(
+        gnm_data_loader.GNMModelIntegrityError, 'allow_pickle'
+    ):
+      gnm_data_loader.load_model_from_custom_file(local_path)
+
+
 class GNMRemoteModelLoadingTest(parameterized.TestCase):
   """Tests for remote model loading and caching in gnm_data_loader."""
 
