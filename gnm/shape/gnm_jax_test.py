@@ -81,6 +81,15 @@ class GNMJaxTest(parameterized.TestCase):
     )
     cls.addClassCleanup(cls.gnms_jax.clear)
 
+  def _get_gnms(
+      self, version: str, variant: Any
+  ) -> tuple[gnm_jax.GNM, gnm_numpy.GNM]:
+    """Returns the JAX and NumPy GNMs, or skips the test if unavailable."""
+    return (
+        self.gnms_jax.get_or_skip(version, variant),
+        self.gnms_np.get_or_skip(version, variant),
+    )
+
   def _get_default_kwargs(
       self, gnm_np: gnm_numpy.GNM, n_batch: int = 1
   ) -> dict[str, jnp.ndarray]:
@@ -118,11 +127,7 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_properties_match(self, version: str, variant: Any):
     """Tests that important properties match between implementations."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     self.assertEqual(gnm.version, gnm_np.version)
     self.assertEqual(gnm.identity_dim, gnm_np.identity_dim)
@@ -148,11 +153,7 @@ class GNMJaxTest(parameterized.TestCase):
       dtype: jnp.dtype,
   ):
     """Tests that JAX GNM poses vertices the same as NumPy GNM."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     # Build a batch of random parameters.
     gnm_jax_parameters = self._get_random_kwargs(gnm_np, batch_dim)
@@ -177,11 +178,7 @@ class GNMJaxTest(parameterized.TestCase):
       batch_size: tuple[int, ...],
   ):
     """Tests extracting vertices and landmarks in JAX."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     gnm_jax_parameters = self._get_random_kwargs(gnm_np, batch_size)
     verts, landmarks = gnm.vertices_and_landmarks(
@@ -197,11 +194,7 @@ class GNMJaxTest(parameterized.TestCase):
       dtype=DTYPES,
   )
   def test_jax_jit_behavior(self, version: str, variant: Any, dtype: jnp.dtype):
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
     # Build a batch of random parameters.
     n_batch = 10
 
@@ -234,11 +227,7 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_bad_shape(self, version: str, variant: Any):
     """Badly shaped parameter should throw an error."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     bad_dimension = gnm.expression_dim + gnm.identity_dim + gnm.num_joints
     n_batch = 5
@@ -254,11 +243,7 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_bad_shape_joint_transforms(self, version: str, variant: Any):
     """Badly shaped parameter should throw an error."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     bad_dimension = gnm.identity_dim + gnm.num_joints
     bad_inputs = [
@@ -284,11 +269,7 @@ class GNMJaxTest(parameterized.TestCase):
       self, version: str, variant: Any, dtype: jnp.dtype
   ):
     """Test that the joint transformations function matches Numpy."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     # Build a batch of random parameters.
     n_batch = 10
@@ -330,11 +311,7 @@ class GNMJaxTest(parameterized.TestCase):
       # pyrefly: ignore[bad-function-definition]
       dtype: jnp.dtype = jnp.float32,
   ):
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
-    gnm_np = self.gnms_np[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     # Build a batch of random parameters.
     grad_func = jax.grad(
@@ -388,11 +365,7 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_transformed_local_offsets(self, version: str, variant: Any):
     """Tests that vertex offset is applied to the posed positions."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm_np = self.gnms_np[version][variant_str]
-    gnm = self.gnms_jax[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     gnm_jax_parameters = self._get_default_kwargs(n_batch=10, gnm_np=gnm_np)
     local_vertices = gnm.vertex_positions_bind_pose(
@@ -433,10 +406,7 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_to_numpy_data_dict(self, version: str, variant: Any):
     """Tests to_numpy_data_dict method."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
+    gnm = self.gnms_jax.get_or_skip(version, variant)
 
     data_dict = gnm.to_numpy_data_dict()
 
@@ -459,19 +429,14 @@ class GNMJaxTest(parameterized.TestCase):
   )
   def test_from_gnm(self, version: str, variant: Any):
     """Tests from_gnm factory method."""
-    variant_str = variant.value if hasattr(variant, 'value') else variant
-    if variant_str not in self.gnms_np[version]:
-      self.skipTest(f'variant {variant_str} not supported in {version}.')
-    gnm = self.gnms_jax[version][variant_str]
+    gnm, gnm_np = self._get_gnms(version, variant)
 
     new_gnm = gnm_jax.GNM.from_gnm(gnm)
 
     self.assertEqual(new_gnm.version, gnm.version)
     self.assertEqual(new_gnm.variant, gnm.variant)
 
-    parameters = self._get_random_kwargs(
-        self.gnms_np[version][variant_str], n_batch=(10,)
-    )
+    parameters = self._get_random_kwargs(gnm_np, n_batch=(10,))
     parameters_jax = jax.tree.map(jnp.asarray, parameters)
 
     vertices_orig = gnm(**parameters_jax)

@@ -18,7 +18,6 @@ import tempfile
 from absl.testing import absltest
 from absl.testing import parameterized
 from etils import epath
-from gnm.shape import gnm_numpy
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import render_gnm
 from gnm.shape.visualization import render_gnm_mitsuba
@@ -34,11 +33,8 @@ class RenderGNMParityTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.gnm_np = gnm_numpy.GNM.from_remote(
-        gnm_numpy.GNMMajorVersion(
-            gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0].removeprefix('v')
-        ),
-        gnm_numpy.GNMVariant.HEAD,
+    self.gnm_np = render_gnm_test_base.load_head_gnm(
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
     )
     self.outputs_dir = _OUTPUTS_DIR / self.__class__.__name__
     self.outputs_dir.mkdir(parents=True, exist_ok=True)

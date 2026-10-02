@@ -74,27 +74,14 @@ class GNMUtilsConversionTest(BaseGNMUtilsTest):
   # version rather than reloading them for each pair.
   max_loaded = None
 
-  @parameterized.product(
-      version=_MAINTAINED_MAJOR_GNM_VERSIONS,
-      from_variant=tuple(_SUPPORTED_VARIANTS),
-      to_variant=tuple(_SUPPORTED_VARIANTS),
-      basis_type=(
-          gnm_utils.BasisType.IDENTITY,
-          gnm_utils.BasisType.EXPRESSION,
-      ),
-  )
-  def test_convert_coefficients(
-      self, version, from_variant, to_variant, basis_type
-  ):
-    if from_variant not in self.gnms[version]:
-      self.skipTest(
-          f'from_variant {from_variant} not supported in GNM version {version}.'
-      )
-    if to_variant not in self.gnms[version]:
-      self.skipTest(
-          f'to_variant {to_variant} not supported in GNM version {version}.'
-      )
-
+  def _get_gnms(
+      self,
+      version: str,
+      from_variant: gnm_numpy.GNMVariant,
+      to_variant: gnm_numpy.GNMVariant,
+      basis_type: gnm_utils.BasisType,
+  ) -> tuple[gnm_numpy.GNM, gnm_numpy.GNM]:
+    """Returns the GNMs to convert between, or skips unsupported conversions."""
     # For expression, all combinations are allowed, but not for identity.
     if basis_type == gnm_utils.BasisType.IDENTITY:
       from_head = from_variant in _HEAD_VARIANTS
@@ -109,8 +96,26 @@ class GNMUtilsConversionTest(BaseGNMUtilsTest):
       if (from_upper and to_body) or (to_upper and from_body):
         self.skipTest('Cannot convert identity between upper body and body.')
 
-    from_gnm = self.gnms[version][from_variant]
-    to_gnm = self.gnms[version][to_variant]
+    return (
+        self.gnms.get_or_skip(version, from_variant),
+        self.gnms.get_or_skip(version, to_variant),
+    )
+
+  @parameterized.product(
+      version=_MAINTAINED_MAJOR_GNM_VERSIONS,
+      from_variant=tuple(_SUPPORTED_VARIANTS),
+      to_variant=tuple(_SUPPORTED_VARIANTS),
+      basis_type=(
+          gnm_utils.BasisType.IDENTITY,
+          gnm_utils.BasisType.EXPRESSION,
+      ),
+  )
+  def test_convert_coefficients(
+      self, version, from_variant, to_variant, basis_type
+  ):
+    from_gnm, to_gnm = self._get_gnms(
+        version, from_variant, to_variant, basis_type
+    )
 
     from_dim = gnm_utils.get_gnm_attribute(
         from_gnm, gnm_utils.BASIS_DIM_ATTRIBUTE_MAP[basis_type]
@@ -168,27 +173,9 @@ class GNMUtilsConversionTest(BaseGNMUtilsTest):
   def test_raises_on_dimension_mismatch(
       self, version, from_variant, to_variant, basis_type
   ):
-    if from_variant not in self.gnms[version]:
-      self.skipTest(f'from_variant {from_variant} not supported in {version}.')
-    if to_variant not in self.gnms[version]:
-      self.skipTest(f'to_variant {to_variant} not supported in {version}.')
-
-    # For expression, all combinations are allowed, but not for identity.
-    if basis_type == gnm_utils.BasisType.IDENTITY:
-      from_head = from_variant in _HEAD_VARIANTS
-      to_head = to_variant in _HEAD_VARIANTS
-      from_body = from_variant in _BODY_VARIANTS
-      to_body = to_variant in _BODY_VARIANTS
-      from_upper = from_variant in _UPPER_BODY_VARIANTS
-      to_upper = to_variant in _UPPER_BODY_VARIANTS
-
-      if (from_head and to_body) or (to_head and from_body):
-        self.skipTest('Cannot convert identity between head and body.')
-      if (from_upper and to_body) or (to_upper and from_body):
-        self.skipTest('Cannot convert identity between upper body and body.')
-
-    from_gnm = self.gnms[version][from_variant]
-    to_gnm = self.gnms[version][to_variant]
+    from_gnm, to_gnm = self._get_gnms(
+        version, from_variant, to_variant, basis_type
+    )
 
     from_dim = gnm_utils.get_gnm_attribute(
         from_gnm, gnm_utils.BASIS_DIM_ATTRIBUTE_MAP[basis_type]
@@ -225,9 +212,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       batch_shape=(tuple(), (5,), (5, 4), (5, 4, 3)),
   )
   def test_identity_to_regions_and_back(self, version, variant, batch_shape):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     orig_identity = self._random_identity(gnm, batch_shape)
     regions = gnm_utils.identity_to_regions(orig_identity, gnm)
     identity_again = gnm_utils.regions_to_identity(regions, gnm)
@@ -239,9 +224,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       batch_shape=(tuple(), (5,), (5, 4), (5, 4, 3)),
   )
   def test_expression_to_regions_and_back(self, version, variant, batch_shape):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     orig_expression = self._random_expression(gnm, batch_shape)
     regions = gnm_utils.expression_to_regions(orig_expression, gnm)
     expression_again = gnm_utils.regions_to_expression(regions, gnm)
@@ -257,9 +240,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_normalize_denormalize_expression(
       self, version, variant, batch_shape
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     coeffs = self._random_expression(gnm, batch_shape)
     norm = gnm_utils.normalize_expression(coeffs, gnm)
     denorm = gnm_utils.denormalize_expression(norm, gnm)
@@ -271,10 +252,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       batch_shape=(tuple(), (5,), (5, 4), (5, 4, 3)),
   )
   def test_joint_rotations_cycle(self, version, variant, batch_shape):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
 
     rots = self._random_rotations(gnm, batch_shape)
     regions = gnm_utils.joint_rotations_to_regions(rots, gnm)
@@ -290,9 +268,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_identity_composed_from_individual_regions(
       self, version, variant, batch_shape
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     orig_identity = self._random_identity(gnm, batch_shape)
     regions = gnm_utils.identity_to_regions(orig_identity, gnm)
 
@@ -313,9 +289,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_expression_composed_from_individual_regions(
       self, version, variant, batch_shape
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     orig_expression = self._random_expression(gnm, batch_shape)
     regions = gnm_utils.expression_to_regions(orig_expression, gnm)
 
@@ -335,9 +309,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_raises_on_wrong_coeffs_shape(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     coeffs = self._random_identity(gnm, (2, 3))
     dim = coeffs.shape[-1]
     with self.assertRaisesRegex(
@@ -350,9 +322,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_raises_on_wrong_region_name(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     bad_region_name = 'non-existent'
     bad_regions = {f'{bad_region_name}': np.zeros((10,))}
     with self.assertRaisesRegex(ValueError, f'No region {bad_region_name} in'):
@@ -363,9 +333,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_region_identity_components_combine(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     regions = gnm_utils.region_identity_components(gnm)
 
     regions = {k: v.transpose(1, 2, 0) for k, v in regions.items()}
@@ -379,9 +347,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_region_expression_components_combine(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     regions = gnm_utils.region_expression_components(gnm)
 
     regions = {k: v.transpose(1, 2, 0) for k, v in regions.items()}
@@ -397,9 +363,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_expression_region_indices_matches_expression_regions(
       self, version, variant
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expression_vector = self._random_expression(gnm, ())
     expression_regions = gnm_utils.expression_to_regions(expression_vector, gnm)
     expression_region_indices = gnm_utils.expression_regions_indices(gnm)
@@ -417,9 +381,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_identity_region_indices_matches_identity_regions(
       self, version, variant
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     identity_vector = self._random_identity(gnm, ())
     identity_regions = gnm_utils.identity_to_regions(identity_vector, gnm)
     identity_region_indices = gnm_utils.identity_regions_indices(gnm)
@@ -435,9 +397,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_identity_dim_is_correct(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expected_dim = gnm.identity_dim
     self.assertEqual(gnm_utils.identity_dim(gnm), expected_dim)
 
@@ -446,9 +406,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_expression_dim_is_correct(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expected_dim = gnm.expression_dim
     self.assertEqual(gnm_utils.expression_dim(gnm), expected_dim)
 
@@ -457,9 +415,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_expression_region_dims_are_correct(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expected_dim = gnm.expression_dim
     regions = gnm_utils.expression_to_regions(np.zeros(expected_dim), gnm)
 
@@ -475,9 +431,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_identity_region_dims_are_correct(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expected_dim = gnm.identity_dim
     regions = gnm_utils.identity_to_regions(np.zeros(expected_dim), gnm)
 
@@ -495,9 +449,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       ),
   )
   def test_expression_sigmas(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
 
     region_name = 'left_eye_region'
     vertex_group_name = 'expression_basis_left_eye'
@@ -521,9 +473,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_identity_region_names(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     identity = self._random_identity(gnm, ())
 
     region_names = gnm_utils.identity_region_names(gnm)
@@ -537,9 +487,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       variant=tuple(_SUPPORTED_VARIANTS),
   )
   def test_expression_region_names(self, version, variant):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     expression = self._random_expression(gnm, ())
 
     region_names = gnm_utils.expression_region_names(gnm)
@@ -557,9 +505,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
   def test_joint_rotations_to_regions_with_missing_regions(
       self, version, variant, batch_shape, missing_joint_index
   ):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
     # if not hasattr(gnm, 'joint_names') or not gnm.joint_names:
     #   self.skipTest(f'variant {variant} does not have joint rotations.')
     if missing_joint_index >= len(gnm.joint_names):
@@ -584,9 +530,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       batch_shape=(tuple(), (5,), (5, 4), (5, 4, 3)),
   )
   def test_scaling_for_expression_loss(self, version, variant, batch_shape):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
 
     expression1 = self._random_expression(gnm, batch_shape)
     expression2 = self._random_expression(gnm, batch_shape)
@@ -611,9 +555,7 @@ class GNMUtilsMethodsTest(BaseGNMUtilsTest):
       batch_shape=(tuple(), (5,), (5, 4), (5, 4, 3)),
   )
   def test_scaling_for_identity_loss(self, version, variant, batch_shape):
-    if variant not in self.gnms[version]:
-      self.skipTest(f'variant {variant} not supported in {version}.')
-    gnm = self.gnms[version][variant]
+    gnm = self.gnms.get_or_skip(version, variant)
 
     identity1 = self._random_identity(gnm, batch_shape)
     identity2 = self._random_identity(gnm, batch_shape)
