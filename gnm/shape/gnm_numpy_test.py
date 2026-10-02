@@ -427,23 +427,19 @@ class GNMNumpyTest(parameterized.TestCase):
       self.skipTest(f'variant {variant} not supported in {version}.')
     gnm_np = self.gnms[version][variant]
 
-    # We build two adjacency matrices, one for the quads, and one for the edge
-    # list, and check they are the same.
-    num_vertices = gnm_np.num_vertices
-    adjacency_matrix_quads = np.zeros((num_vertices, num_vertices), dtype=bool)
-    adjacency_matrix_edge_list = adjacency_matrix_quads.copy()
-
-    for v1, v2, v3, v4 in gnm_np.quads:
-      adjacency_matrix_quads[v1, v2] = adjacency_matrix_quads[v2, v1] = True
-      adjacency_matrix_quads[v2, v3] = adjacency_matrix_quads[v3, v2] = True
-      adjacency_matrix_quads[v3, v4] = adjacency_matrix_quads[v4, v3] = True
-      adjacency_matrix_quads[v4, v1] = adjacency_matrix_quads[v1, v4] = True
-
-    for v1, v2 in gnm_np.edge_list:
-      adjacency_matrix_edge_list[v1, v2] = True
+    # Every quad side must appear in the edge list in both directions, and the
+    # edge list must not contain any other edge. Compare the sets of unique
+    # directed edges rather than dense (V, V) adjacency matrices, which take
+    # several GiB of memory for the larger models.
+    quads = np.asarray(gnm_np.quads)
+    quad_edges = np.concatenate(
+        [quads[:, [i, (i + 1) % 4]] for i in range(4)], axis=0
+    )
+    quad_edges = np.concatenate([quad_edges, quad_edges[:, ::-1]], axis=0)
 
     np.testing.assert_array_equal(
-        adjacency_matrix_quads, adjacency_matrix_edge_list
+        np.unique(np.asarray(gnm_np.edge_list), axis=0),
+        np.unique(quad_edges, axis=0),
     )
 
   @parameterized.parameters(get_group_subsets_test_cases())

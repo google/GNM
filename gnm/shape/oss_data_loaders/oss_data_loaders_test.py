@@ -169,6 +169,26 @@ class OSSDataLoadersTest(parameterized.TestCase):
       self.assertIsInstance(data3, dict)
       self.assertEqual(mock_download.call_count, 2)
 
+  def test_load_model_from_remote_returns_independent_data(self):
+    dest_cache_file = self.temp_dir / 'v3_0' / 'gnm_head.npz'
+    dest_cache_file.parent.mkdir(parents=True, exist_ok=True)
+    dest_cache_file.write_bytes(self.dummy_npz_bytes)
+
+    data1 = oss_data_loaders.load_model_from_remote(
+        gnm_specs.GNMMajorVersion.V3,
+        gnm_specs.GNMVariant.HEAD,
+        cache_dir=self.temp_dir,
+    )
+    data1['joint_names'].append('leaked_joint')
+    data2 = oss_data_loaders.load_model_from_remote(
+        gnm_specs.GNMMajorVersion.V3,
+        gnm_specs.GNMVariant.HEAD,
+        cache_dir=self.temp_dir,
+    )
+
+    self.assertIsNot(data1, data2)
+    self.assertNotIn('leaked_joint', data2['joint_names'])
+
   def test_load_model_from_remote_with_str_cache_dir(self):
     dest_cache_file = self.temp_dir / 'v3_0' / 'gnm_head.npz'
 

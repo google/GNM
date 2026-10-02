@@ -16,6 +16,8 @@
 
 # pylint: disable=protected-access
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
@@ -35,6 +37,20 @@ _BODY_VARIANTS = frozenset()
 _UPPER_BODY_VARIANTS = frozenset()
 
 
+@functools.cache
+def _load_gnms() -> dict[str, dict[str, gnm_numpy.GNM]]:
+  """Loads all maintained GNMs once and shares them across test classes."""
+  gnms = {}
+  for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
+    gnms[version] = {}
+    for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
+      gnms[version][variant] = gnm_numpy.GNM.from_remote(
+          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
+          gnm_numpy.GNMVariant(variant),
+      )
+  return gnms
+
+
 class BaseGNMUtilsTest(parameterized.TestCase):
 
   gnms: dict[str, dict[str, gnm_numpy.GNM]]
@@ -42,15 +58,9 @@ class BaseGNMUtilsTest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    # Cache GNM instances to speed up tests
-    cls.gnms = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        cls.gnms[version][variant] = gnm_numpy.GNM.from_remote(
-            gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-            gnm_numpy.GNMVariant(variant),
-        )
+    # The GNM loaders don't cache models, so share the loaded instances across
+    # all test classes to keep the test memory and runtime down.
+    cls.gnms = _load_gnms()
 
 
 class GNMUtilsConversionTest(BaseGNMUtilsTest):
