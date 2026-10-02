@@ -15,6 +15,7 @@
 """Tests for GNM PyTorch implementation."""
 
 from collections.abc import Sequence
+import functools
 import itertools
 from typing import Any
 
@@ -23,6 +24,7 @@ from absl.testing import parameterized
 from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_numpy
 from gnm.shape import gnm_pytorch
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 import numpy as np
 import torch
@@ -35,7 +37,26 @@ _MAINTAINED_MAJOR_GNM_VERSIONS = gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
 _MAJOR_VERSION_TO_VARIANTS_MAP = gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP
 
 
+_VARIANTS_BY_VERSION = {
+    version: [
+        variant
+        for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+        if variant in _SUPPORTED_VARIANTS
+    ]
+    for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+}
+
+
+def _load_gnm_pytorch(version: str, variant: str) -> gnm_pytorch.GNM:
+  gnm = gnm_test_utils.load_gnm(gnm_pytorch.GNM, version, variant)
+  if torch.cuda.is_available():
+    gnm.cuda()
+  return gnm
+
+
 class GNMPytorchTest(parameterized.TestCase):
+  gnms_np: gnm_test_utils.LazyGNMDict[gnm_numpy.GNM]
+  gnms_pytorch: gnm_test_utils.LazyGNMDict[gnm_pytorch.GNM]
 
   @classmethod
   def setUpClass(cls):
@@ -46,23 +67,16 @@ class GNMPytorchTest(parameterized.TestCase):
     np.random.seed(0)
     torch.random.manual_seed(0)
 
-    cls.gnms_np = {}
-    cls.gnms_pytorch = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms_np[version] = {}
-      cls.gnms_pytorch[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        if variant in [v.value for v in _SUPPORTED_VARIANTS]:
-          cls.gnms_np[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
-          cls.gnms_pytorch[version][variant] = gnm_pytorch.GNM.from_remote(
-              gnm_pytorch.GNMMajorVersion(version.removeprefix('v')),
-              gnm_pytorch.GNMVariant(variant),
-          )
-          if torch.cuda.is_available():
-            cls.gnms_pytorch[version][variant].cuda()
+    # Load the models on demand, keeping one of each in memory at a time.
+    cls.gnms_np = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        _VARIANTS_BY_VERSION,
+    )
+    cls.addClassCleanup(cls.gnms_np.clear)
+    cls.gnms_pytorch = gnm_test_utils.LazyGNMDict(
+        _load_gnm_pytorch, _VARIANTS_BY_VERSION
+    )
+    cls.addClassCleanup(cls.gnms_pytorch.clear)
 
   def _get_default_kwargs(
       self, gnm_np: gnm_numpy.GNM, n_batch: int = 1, device: str = 'cpu'
@@ -275,10 +289,7 @@ class GNMPytorchTest(parameterized.TestCase):
     gnm_np = self.gnms_np[version][variant_str]
     gnm_torch = self.gnms_pytorch[version][variant_str]
 
-    gnm_pruned = gnm_pytorch.GNM.from_remote(
-        gnm_pytorch.GNMMajorVersion(version.removeprefix('v')),
-        gnm_pytorch.GNMVariant(variant_str),
-    )
+    gnm_pruned = gnm_test_utils.load_gnm(gnm_pytorch.GNM, version, variant_str)
 
     keep_vertices = gnm_np.quads[0]
     gnm_pruned.prune_vertices(keep_vertices)
@@ -471,4 +482,4 @@ class GNMPytorchFactoryMethodsTest(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())

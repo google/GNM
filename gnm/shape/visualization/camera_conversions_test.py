@@ -27,14 +27,6 @@ import numpy as np
 from scipy.spatial import transform
 import tensorflow as tf
 
-try:
-  from tensorflow_graphics.rendering import rasterization_backend
-  from tensorflow_graphics.rendering import triangle_rasterizer
-
-  _HAS_TF_GRAPHICS = True
-except ImportError:
-  _HAS_TF_GRAPHICS = False
-
 
 _OPENCV_TO_OPENGL = np.diag([1.0, -1.0, -1.0, 1.0]).astype(dtype=np.float32)
 
@@ -87,6 +79,62 @@ def _unproject_points(
   return points_3d
 
 
+def _rasterize_triangles(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    view_projection_matrix: np.ndarray,
+    image_size: tuple[int, int],
+) -> np.ndarray:
+  """Computes the pixel coverage of triangles following OpenGL conventions.
+
+  Pixels are sampled at their centers, triangles are front-facing when their
+  vertices are counter-clockwise in normalized device coordinates (back faces
+  are culled), and fragments outside of the [-1, 1] depth range are clipped.
+
+  Args:
+    vertices: The [V, 3] world-space vertex positions.
+    triangles: The [T, 3] vertex indices of the triangles.
+    view_projection_matrix: The [4, 4] matrix mapping world-space positions to
+      clip space.
+    image_size: The (height, width) of the image.
+
+  Returns:
+    A boolean [height, width] mask of the covered pixels, whose first row is the
+    top of the image.
+  """
+  height, width = image_size
+  vertices_h = np.concatenate(
+      [vertices, np.ones_like(vertices[:, :1])], axis=-1
+  )
+  clip_vertices = vertices_h @ view_projection_matrix.T
+
+  # Homogeneous NDC coordinates of the pixel centers, bottom row first.
+  pixels_x = (np.arange(width) + 0.5) / (0.5 * width) - 1.0
+  pixels_y = (np.arange(height) + 0.5) / (0.5 * height) - 1.0
+  pixels = np.stack(
+      [*np.meshgrid(pixels_x, pixels_y), np.ones((height, width))], axis=-1
+  )
+
+  mask = np.zeros((height, width), dtype=bool)
+  for triangle in triangles:
+    corners = clip_vertices[triangle]
+    # The rows of the adjugate of the matrix whose columns are the (x, y, w)
+    # clip coordinates of the corners. Applied to a pixel, they give its
+    # homogeneous barycentric coordinates scaled by the determinant, which is
+    # positive for front faces.
+    xyw = corners[:, [0, 1, 3]]
+    edges = np.cross(np.roll(xyw, -1, axis=0), np.roll(xyw, -2, axis=0))
+    barycentrics = pixels @ edges.T
+    inside = np.all(barycentrics >= 0, axis=-1) & np.any(
+        barycentrics > 0, axis=-1
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+      depth = (barycentrics @ corners[:, 2]) / (barycentrics @ corners[:, 3])
+    mask |= inside & (depth >= -1.0) & (depth <= 1.0)
+
+  return np.flipud(mask)
+
+
 class CameraConversionsTest(parameterized.TestCase):
 
   def setUp(self):
@@ -125,11 +173,6 @@ class CameraConversionsTest(parameterized.TestCase):
     ).astype(np.float32)
 
     self.rectangle_triangles = np.array([[0, 2, 1], [0, 3, 2]], dtype=np.int32)
-
-    self.vertex_colors = np.full_like(
-        self.rectangle_3d, _RECTANGLE_COLOR, dtype=np.float32
-    )
-    self.vertex_colors /= 255
 
     top_left = self.rectangle_2d[0]
     bottom_right = self.rectangle_2d[2] - 1
@@ -374,21 +417,16 @@ class CameraConversionsTest(parameterized.TestCase):
       view_projection_matrix: np.ndarray,
   ) -> np.ndarray:
     """Rasterizes rectangle coordinates with a projection matrix."""
-    if not _HAS_TF_GRAPHICS:
-      self.skipTest("tensorflow_graphics not available on this platform.")
-    buffers = triangle_rasterizer.rasterize(
+    foreground = _rasterize_triangles(
         rectangle_3d,
         self.rectangle_triangles,
-        {"vertex_colors": self.vertex_colors},
-        view_projection_matrix=view_projection_matrix,
-        image_size=self.image_size,
-        backend=rasterization_backend.RasterizationBackends.CPU,
+        view_projection_matrix,
+        self.image_size,
     )
-    buffers = {k: np.flipud(v.numpy()) for k, v in buffers.items()}
-    foreground = buffers["mask"] > 0
-    rendered_colors = (buffers["vertex_colors"] * 255).astype(np.uint8)
     rendered_image = np.where(
-        foreground, rendered_colors, self.background_image
+        foreground[..., None],
+        np.array(_RECTANGLE_COLOR, dtype=np.uint8),
+        self.background_image,
     )
 
     return rendered_image
