@@ -14,6 +14,7 @@
 
 """Tests for GNM TensorFlow implementation."""
 
+import functools
 import itertools
 from typing import Any
 
@@ -37,8 +38,20 @@ _MAJOR_VERSION_TO_VARIANTS_MAP = gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP
 BATCH_DIMS = [tuple(), tuple([1]), tuple([1, 2]), tuple([2, 1, 2])]
 
 
+_VARIANTS_BY_VERSION = {
+    version: [
+        variant
+        for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+        if variant in _SUPPORTED_VARIANTS
+    ]
+    for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+}
+
+
 class GNMTensorflowTest(parameterized.TestCase):
   rng: np.random.Generator
+  gnms_np: gnm_test_utils.LazyGNMDict[gnm_numpy.GNM]
+  gnms_tf: gnm_test_utils.LazyGNMDict[gnm_tensorflow.GNM]
 
   @classmethod
   def setUpClass(cls):
@@ -47,21 +60,17 @@ class GNMTensorflowTest(parameterized.TestCase):
     cls.rng = np.random.default_rng(0)
     tf.random.set_seed(0)
 
-    cls.gnms_np = {}
-    cls.gnms_tf = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.gnms_np[version] = {}
-      cls.gnms_tf[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        if variant in [v.value for v in _SUPPORTED_VARIANTS]:
-          cls.gnms_np[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
-          cls.gnms_tf[version][variant] = gnm_tensorflow.GNM.from_remote(
-              gnm_tensorflow.GNMMajorVersion(version.removeprefix('v')),
-              gnm_tensorflow.GNMVariant(variant),
-          )
+    # Load the models on demand, keeping one of each in memory at a time.
+    cls.gnms_np = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        _VARIANTS_BY_VERSION,
+    )
+    cls.addClassCleanup(cls.gnms_np.clear)
+    cls.gnms_tf = gnm_test_utils.LazyGNMDict(
+        functools.partial(gnm_test_utils.load_gnm, gnm_tensorflow.GNM),
+        _VARIANTS_BY_VERSION,
+    )
+    cls.addClassCleanup(cls.gnms_tf.clear)
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
@@ -313,10 +322,7 @@ class GNMTensorflowTest(parameterized.TestCase):
     gnm_np = self.gnms_np[version][variant]
     gnm_tf = self.gnms_tf[version][variant]
 
-    gnm_pruned = gnm_tensorflow.GNM.from_remote(
-        gnm_tensorflow.GNMMajorVersion(version.removeprefix('v')),
-        gnm_tensorflow.GNMVariant(variant),
-    )
+    gnm_pruned = gnm_test_utils.load_gnm(gnm_tensorflow.GNM, version, variant)
 
     keep_vertices = gnm_np.quads[0]
     gnm_pruned.prune_vertices(keep_vertices)
@@ -526,4 +532,4 @@ class GNMTensorflowFactoryMethodsTest(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())
