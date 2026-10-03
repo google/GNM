@@ -35,8 +35,11 @@ import numpy.typing as npt
 FloatArray = npt.NDArray[np.floating]
 ColorOrImage = npt.NDArray[np.uint8] | FloatArray | Sequence[float] | float
 
-_pkg = __package__ or 'gnm.shape.visualization'
-_TEXTURES_DIR = epath.resource_path(_pkg).parent / 'data' / 'textures'
+# Resolve the data directory from the parent `gnm.shape` package. This package
+# has no `__init__.py`, so `resource_path` on it returns a `MultiplexedPath`,
+# which has no `.parent`.
+_pkg = (__package__ or 'gnm.shape.visualization').rpartition('.')[0]
+_TEXTURES_DIR = epath.resource_path(_pkg) / 'data' / 'textures'
 EDGEFLOW_TEXTURE_BY_BODY_PART = immutabledict.immutabledict({
     gnm_numpy.GNMBodyPart.HEAD: _TEXTURES_DIR / 'edgeflow_bw_4k.png',
 })
