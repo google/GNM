@@ -49,6 +49,11 @@ GNMMajorVersion = gnm_specs.GNMMajorVersion
 GNMVariant = gnm_specs.GNMVariant
 GNMBodyPart = gnm_specs.GNMBodyPart
 GNMLandmarksType = gnm_landmarks.GNMLandmarksType
+
+UDIM_FIRST_TILE = gnm_xnp.UDIM_FIRST_TILE
+UDIM_TILES_PER_ROW = gnm_xnp.UDIM_TILES_PER_ROW
+UDIM_TILES = gnm_xnp.UDIM_TILES
+
 GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 
@@ -90,8 +95,10 @@ class GNM(gnm_xnp.GNM, torch.nn.Module):
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
-    quad_uvs: Texture coordinates per quad, (Q, 4, 2).
-    triangle_uvs: Texture coordinates per triangle, (T, 3, 2).
+    quad_uvs: Texture coordinates per quad, (Q, 4, 2). All regions share the
+      unit square and overlap there; prefer `quad_uvs_udim`.
+    triangle_uvs: Texture coordinates per triangle, (T, 3, 2). All regions share
+      the unit square and overlap there; prefer `triangle_uvs_udim`.
     mesh_component_names: The vertex group name corresponding to each separate
       mesh part.
     mirror_indices: The index of each vertex on the other side of the mesh.
