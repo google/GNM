@@ -17,16 +17,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Self
 from unittest import mock
 
 from absl.testing import absltest
 from gnm.shape import gnm_base
 from gnm.shape import gnm_data_loader
+from gnm.shape import gnm_testing_factory_mixins
 from gnm.shape.data.versions import gnm_specs
 from gnm.shape.data.versions import gnm_test_catalog
 
-_TEST_MAJOR_VERSION_STR = gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+_TEST_MAJOR_VERSION_STR = gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[-1]
 _TEST_MAJOR_VERSION = gnm_specs.GNMMajorVersion(_TEST_MAJOR_VERSION_STR[1:])
 _TEST_FULL_VERSION = gnm_data_loader.major_to_newest_full_version(
     _TEST_MAJOR_VERSION
@@ -39,8 +40,11 @@ _TEST_BODY_PART = gnm_specs.GNMBodyPart(
 )
 
 
-class DummyGNM(gnm_base.GNMBase):
-  """Dummy GNM subclass for testing."""
+class PlaceholderGNM(
+    gnm_testing_factory_mixins.GNMTestingFactoryMethodsMixin,
+    gnm_base.GNMBase,
+):
+  """Placeholder GNM subclass for testing."""
 
   def __init__(
       self,
@@ -51,17 +55,19 @@ class DummyGNM(gnm_base.GNMBase):
     self.variant = variant
 
   def to_numpy_data_dict(self) -> dict[str, Any]:
-    return {'dummy': 1}
+    return {
+        'version': self.version,
+        'variant': self.variant,
+    }
 
   @classmethod
   def _from_model_data(
       cls,
-      data_dict: Mapping[str, Any],
-  ) -> DummyGNM:
-    del data_dict
+      model_data: Mapping[str, Any],
+  ) -> Self:
     return cls(
-        version=_TEST_FULL_VERSION,
-        variant=_TEST_VARIANT,
+        version=model_data.get('version', _TEST_FULL_VERSION),
+        variant=model_data.get('variant', _TEST_VARIANT),
     )
 
 
@@ -69,8 +75,7 @@ class GNMBaseTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.gnm = DummyGNM(
-        version=_TEST_FULL_VERSION,
+    self.gnm = PlaceholderGNM.from_placeholder(
         variant=_TEST_VARIANT,
     )
 
@@ -79,45 +84,47 @@ class GNMBaseTest(absltest.TestCase):
     self.assertEqual(self.gnm.body_part, _TEST_BODY_PART)
 
   def test_from_gnm(self):
-    new_gnm = DummyGNM.from_gnm(self.gnm)
-    self.assertIsInstance(new_gnm, DummyGNM)
+    new_gnm = PlaceholderGNM.from_gnm(self.gnm)
+    self.assertIsInstance(new_gnm, PlaceholderGNM)
     self.assertEqual(new_gnm.version, _TEST_FULL_VERSION)
     self.assertEqual(new_gnm.variant, _TEST_VARIANT)
 
   def test_from_local_deprecated_redirects_to_from_remote(self) -> None:
     with mock.patch.object(
-        DummyGNM,
+        PlaceholderGNM,
         'from_remote',
         return_value=self.gnm,
     ) as mock_from_remote:
       with self.assertWarns(DeprecationWarning):
-        new_gnm = DummyGNM.from_local(_TEST_MAJOR_VERSION, _TEST_VARIANT)
+        new_gnm = PlaceholderGNM.from_local(
+            _TEST_MAJOR_VERSION, _TEST_VARIANT
+        )
       self.assertEqual(new_gnm, self.gnm)
       mock_from_remote.assert_called_once_with(
           version=_TEST_MAJOR_VERSION,
           variant=_TEST_VARIANT,
           source=gnm_specs.GNMRemoteSource.HTTP,
       )
-      self.assertTrue(hasattr(DummyGNM.from_local, '__deprecated__'))
+      self.assertTrue(hasattr(PlaceholderGNM.from_local, '__deprecated__'))
 
   def test_from_custom_file(self):
     with mock.patch.object(
         gnm_data_loader,
         'load_model_from_custom_file',
-        return_value={'dummy': 1},
+        return_value={'placeholder': 1},
     ) as mock_load:
-      new_gnm = DummyGNM.from_custom_file('/path/to/custom_model.npz')
-      self.assertIsInstance(new_gnm, DummyGNM)
+      new_gnm = PlaceholderGNM.from_custom_file('/path/to/custom_model.npz')
+      self.assertIsInstance(new_gnm, PlaceholderGNM)
       mock_load.assert_called_once_with('/path/to/custom_model.npz')
 
   def test_from_remote_default_http(self):
     with mock.patch.object(
         gnm_data_loader,
         'load_model_from_remote',
-        return_value={'dummy': 1},
+        return_value={'placeholder': 1},
     ) as mock_load:
-      new_gnm = DummyGNM.from_remote(_TEST_MAJOR_VERSION, _TEST_VARIANT)
-      self.assertIsInstance(new_gnm, DummyGNM)
+      new_gnm = PlaceholderGNM.from_remote(_TEST_MAJOR_VERSION, _TEST_VARIANT)
+      self.assertIsInstance(new_gnm, PlaceholderGNM)
       mock_load.assert_called_once_with(
           version=_TEST_MAJOR_VERSION,
           variant=_TEST_VARIANT,
@@ -130,14 +137,14 @@ class GNMBaseTest(absltest.TestCase):
     with mock.patch.object(
         gnm_data_loader,
         'load_model_from_remote',
-        return_value={'dummy': 1},
+        return_value={'placeholder': 1},
     ) as mock_load:
-      new_gnm = DummyGNM.from_remote(
+      new_gnm = PlaceholderGNM.from_remote(
           _TEST_MAJOR_VERSION,
           _TEST_VARIANT,
           source=gnm_specs.GNMRemoteSource.HUGGING_FACE,
       )
-      self.assertIsInstance(new_gnm, DummyGNM)
+      self.assertIsInstance(new_gnm, PlaceholderGNM)
       mock_load.assert_called_once_with(
           version=_TEST_MAJOR_VERSION,
           variant=_TEST_VARIANT,
@@ -150,14 +157,14 @@ class GNMBaseTest(absltest.TestCase):
     with mock.patch.object(
         gnm_data_loader,
         'load_model_from_remote',
-        return_value={'dummy': 1},
+        return_value={'placeholder': 1},
     ) as mock_load:
-      new_gnm = DummyGNM.from_remote(
+      new_gnm = PlaceholderGNM.from_remote(
           _TEST_MAJOR_VERSION,
           _TEST_VARIANT,
           source=gnm_specs.GNMRemoteSource.KAGGLE,
       )
-      self.assertIsInstance(new_gnm, DummyGNM)
+      self.assertIsInstance(new_gnm, PlaceholderGNM)
       mock_load.assert_called_once_with(
           version=_TEST_MAJOR_VERSION,
           variant=_TEST_VARIANT,

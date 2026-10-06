@@ -34,11 +34,10 @@ Usage:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-from typing import Any
 
 from absl import logging
+from etils import enp
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
@@ -125,12 +124,9 @@ class GNM(gnm_xnp.GNM, torch.nn.Module):
         self.register_buffer(field.name, val, persistent=False)
 
   @classmethod
-  def _from_model_data(
-      cls,
-      model_data: Mapping[str, Any],
-  ) -> GNM:
-    """Creates a PyTorch GNM instance from model data."""
-    return cls._from_model_data_with_xnp(model_data, xnp=torch)
+  def _get_np_module(cls) -> enp.NpModule:
+    """Returns the PyTorch backend module."""
+    return torch  # pyrefly: ignore[bad-return]
 
   def compute_vertex_normals(
       self,

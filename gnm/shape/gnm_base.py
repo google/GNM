@@ -21,17 +21,18 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Self
 
-from etils import epath
 from gnm.shape import gnm_data_loader
+from etils import epath
+from gnm.shape import gnm_factory_mixins
 from gnm.shape.data.versions import gnm_specs
 from typing_extensions import deprecated
 
 
 
-# `from_custom_file`) into separate public/internal mixin modules, selected via
+# `from_remote`) into separate public/internal mixin modules, selected via
 # copybara, to reduce the number of copybara strips in this class.
 @dataclasses.dataclass(init=False)
-class GNMBase(abc.ABC):
+class GNMBase(gnm_factory_mixins.GNMFactoryMethodsMixin, abc.ABC):
   """Base GNM class."""
 
   version: gnm_specs.GNMVersion
@@ -99,25 +100,6 @@ class GNMBase(abc.ABC):
     return cls._from_model_data(data_dict)
 
   @classmethod
-  def from_custom_file(
-      cls,
-      model_file: epath.PathLike,
-  ) -> Self:
-    """Creates a GNM instance from a custom model file.
-
-    The model file must be an .npz archive containing all the expected GNM
-    attributes. Extra attributes are ignored.
-
-    Args:
-      model_file: Path to the GNM model file (.npz) as Path or str.
-
-    Returns:
-      A GNM instance loaded with the model weights.
-    """
-    data_dict = gnm_data_loader.load_model_from_custom_file(model_file)
-    return cls._from_model_data(data_dict)
-
-  @classmethod
   def from_gnm(cls, gnm: GNMBase) -> Self:
     """Creates a GNM instance from another GNM instance."""
     data_dict = gnm.to_numpy_data_dict()
@@ -132,7 +114,7 @@ class GNMBase(abc.ABC):
   @abc.abstractmethod
   def _from_model_data(
       cls,
-      data_dict: Mapping[str, Any],
+      model_data: Mapping[str, Any],
   ) -> Self:
     """Creates a GNM instance from a model data."""
     pass

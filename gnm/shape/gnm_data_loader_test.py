@@ -122,7 +122,9 @@ class GNMCustomFileLoadingTest(parameterized.TestCase):
     local_path = self.temp_dir / 'invalid_model.npz'
     np.savez(local_path, some_key='some_value')
 
-    with self.assertRaisesRegex(ValueError, "Missing fields:.*'version'"):
+    with self.assertRaisesRegex(
+        ValueError, 'Required attribute version not found in GNM data'
+    ):
       gnm_data_loader.load_model_from_custom_file(local_path)
 
   def test_load_model_from_custom_file_fails_for_unknown_version(self):

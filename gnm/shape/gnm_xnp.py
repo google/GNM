@@ -28,6 +28,7 @@ from absl import logging
 from etils import enp
 from gnm.shape import gnm_base
 from gnm.shape import gnm_common
+from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_typing
 from gnm.shape.data.versions import gnm_specs
@@ -38,6 +39,26 @@ enpt = gnm_typing.enpt
 
 _NONZERO_THRESHOLD = 1e-4
 _EPSILON = 1e-8
+
+
+def _validate_model_data(
+    model_data: Mapping[str, Any],
+) -> tuple[bool, Sequence[str], Sequence[str]]:
+  """Validates the GNM model data dictionary.
+
+  Returns any extra or missing fields and a boolean indicating if the model
+  data dictionary has exactly the expected fields.
+
+  Args:
+    model_data: The GNM model data dictionary to validate.
+
+  Returns:
+    A tuple of (is_valid, missing_fields, extra_fields).
+  """
+  expected_fields = set(gnm_data_schema.GNM_DATA_ATTRIBUTES)
+  missing_fields = list(expected_fields - set(model_data.keys()))
+  extra_fields = list(set(model_data.keys()) - expected_fields)
+  return not missing_fields and not extra_fields, missing_fields, extra_fields
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
@@ -166,12 +187,22 @@ class GNM(gnm_base.GNMBase):
     self._xnp = enp.get_np_module(self.template_vertex_positions)
 
   @classmethod
+  @abc.abstractmethod
+  def _get_np_module(cls) -> enp.NpModule:
+    """Returns the array module (e.g., np, jnp, torch, tnp) for this backend."""
+    raise NotImplementedError(
+        f'{cls.__name__} is an abstract backend-agnostic base class and'
+        ' does not define a backend array module. Use a concrete backend'
+        ' subclass (e.g., gnm_numpy.GNM, gnm_pytorch.GNM).'
+    )
+
+  @classmethod
   def _prepare_init_kwargs(
       cls,
       model_data: Mapping[str, Any],
-      xnp: enp.NpModule,
   ) -> dict[str, Any]:
     """Prepares and casts GNM initialization arguments using xnp."""
+    xnp = cls._get_np_module()
     init_kwargs = {}
 
     # Identify type convert functions.
@@ -217,13 +248,18 @@ class GNM(gnm_base.GNMBase):
     return init_kwargs
 
   @classmethod
-  def _from_model_data_with_xnp(
+  def _from_model_data(
       cls,
       model_data: Mapping[str, Any],
-      xnp: enp.NpModule,
   ) -> Self:
-    """Creates a GNM instance from a model data dictionary and array module."""
-    init_kwargs = cls._prepare_init_kwargs(model_data, xnp)
+    """Creates a GNM instance from a model data dictionary."""
+    valid, missing, extra = _validate_model_data(model_data)
+    if not valid:
+      raise ValueError(
+          'Validation failed for GNM model data.'
+          f' Missing: {missing}, Extra: {extra}'
+      )
+    init_kwargs = cls._prepare_init_kwargs(model_data)
     # pylint: disable=no-value-for-parameter
     instance = super(GNM, cls).__new__(cls)
     # pylint: enable=no-value-for-parameter
@@ -231,19 +267,6 @@ class GNM(gnm_base.GNMBase):
       object.__setattr__(instance, k, v)
     instance.__post_init__()
     return instance
-
-  @classmethod
-  @abc.abstractmethod
-  def _from_model_data(
-      cls,
-      data_dict: Mapping[str, Any],
-  ) -> Self:
-    """Creates a GNM instance from a model data dictionary."""
-    raise NotImplementedError(
-        f'{cls.__name__} is an abstract backend-agnostic base class and'
-        ' cannot be loaded directly. Use a concrete backend subclass (e.g.,'
-        ' gnm_numpy.GNM, gnm_pytorch.GNM).'
-    )
 
   def to_numpy_data_dict(self) -> dict[str, Any]:
     """Returns a dictionary of the GNM data represented as NumPy arrays.

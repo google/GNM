@@ -18,34 +18,20 @@ from __future__ import annotations
 
 import dataclasses
 import typing
-from typing import Any
 
 from absl.testing import absltest
 from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_testing_factory_mixins
 from gnm.shape import gnm_xnp
 import numpy as np
 
 
-def _get_placeholder_model_data() -> dict[str, Any]:
-  """Returns a minimal GNM model data dict with float32/int32 arrays."""
-  model_data = {}
-  for name in gnm_data_schema.GNM_DATA_ATTRIBUTES:
-    model_data[name] = np.zeros((1, 3), dtype=np.float32)
-  model_data.update({
-      'version': '3.0',
-      'variant': 'head',
-      'identity_names': ['id1'],
-      'joint_names': ['joint1'],
-      'expression_names': ['exp1'],
-      'joint_parent_indices': np.array([0], dtype=np.int32),
-      'quads': np.zeros((1, 4), dtype=np.int32),
-      'triangles': np.zeros((1, 3), dtype=np.int32),
-      'mirror_indices': np.array([0], dtype=np.int32),
-      'mesh_component_names': ['part1'],
-      'vertex_group_names': ['group1'],
-  })
-  return model_data
+class PlaceholderGNM(
+    gnm_testing_factory_mixins.GNMTestingFactoryMethodsMixin,
+    gnm_numpy.GNM,
+):
+  """Concrete GNM subclass with testing factory methods."""
 
 
 class GNMXnpTest(absltest.TestCase):
@@ -64,16 +50,12 @@ class GNMXnpTest(absltest.TestCase):
     with self.assertRaises(TypeError):
       gnm_xnp.GNM()  # pylint: disable=abstract-class-instantiated  # pyrefly: ignore[bad-instantiation]
 
-  def test_from_model_data_raises_not_implemented(self):
-    with self.assertRaises(NotImplementedError):
-      gnm_xnp.GNM._from_model_data({})  # pylint: disable=protected-access
-
   def test_cannot_instantiate_concrete_gnm_via_constructor(self):
     with self.assertRaises(TypeError):
-      gnm_numpy.GNM()
+      PlaceholderGNM()
 
   def test_to_numpy_data_dict_does_not_share_memory_with_instance(self):
-    gnm = gnm_numpy.GNM._from_model_data(_get_placeholder_model_data())  # pylint: disable=protected-access
+    gnm = PlaceholderGNM.from_placeholder()
     data_dict = gnm.to_numpy_data_dict()
 
     data_dict['template_vertex_positions'][0, 0] = 1.0
@@ -91,8 +73,8 @@ class GNMXnpTest(absltest.TestCase):
     self.assertEqual(gnm.vertex_group_names, ['group1'])
 
   def test_from_gnm_does_not_share_memory_with_source_instance(self):
-    source = gnm_numpy.GNM._from_model_data(_get_placeholder_model_data())  # pylint: disable=protected-access
-    gnm = gnm_numpy.GNM.from_gnm(source)
+    source = PlaceholderGNM.from_placeholder()
+    gnm = PlaceholderGNM.from_gnm(source)
 
     gnm.template_vertex_positions[0, 0] = 1.0
     gnm.quads[0, 0] = 1
@@ -109,6 +91,22 @@ class GNMXnpTest(absltest.TestCase):
         gnm.template_joint_positions, np.zeros((1, 3))
     )
     self.assertEqual(gnm.vertex_group_names, ['group1'])
+
+  def test_from_model_data_fails_for_missing_fields(self):
+    gnm = PlaceholderGNM.from_placeholder()
+    data_dict = gnm.to_numpy_data_dict()
+    del data_dict['template_vertex_positions']
+
+    with self.assertRaisesRegex(
+        ValueError, "Missing:.*'template_vertex_positions'"
+    ):
+      PlaceholderGNM._from_model_data(data_dict)
+
+  def test_from_model_data_fails_for_extra_fields(self):
+    with self.assertRaisesRegex(ValueError, "Extra:.*'unexpected_field'"):
+      PlaceholderGNM.from_placeholder(
+          unexpected_field=1,
+      )
 
 
 if __name__ == '__main__':
