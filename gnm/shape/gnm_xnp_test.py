@@ -92,6 +92,16 @@ class GNMXnpTest(absltest.TestCase):
     )
     self.assertEqual(gnm.vertex_group_names, ['group1'])
 
+  def test_from_model_data_fails_for_invalid_data(self):
+    gnm = PlaceholderGNM.from_placeholder()
+    data_dict = gnm.to_numpy_data_dict()
+    del data_dict['template_vertex_positions']
+
+    with self.assertRaisesRegex(
+        ValueError, 'Validation failed for GNM model data'
+    ):
+      PlaceholderGNM._from_model_data(data_dict)
+
 
 if __name__ == '__main__':
   absltest.main()

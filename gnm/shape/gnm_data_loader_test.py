@@ -105,12 +105,12 @@ class GNMCustomFileLoadingTest(parameterized.TestCase):
     self.assertEqual(data['version'], gnm_specs.GNMVersion('3.0'))
     self.assertEqual(data['variant'], gnm_specs.GNMVariant.HEAD)
 
-  def test_load_model_from_custom_file_drops_extra_fields(self):
+  def test_load_model_from_custom_file_retains_extra_fields(self):
     local_path = self._write_model(extra_field=np.zeros((1,)))
 
     data = gnm_data_loader.load_model_from_custom_file(local_path)
 
-    self.assertNotIn('extra_field', data)
+    self.assertIn('extra_field', data)
 
   def test_load_model_from_custom_file_fails_when_file_not_found(self):
     with self.assertRaisesRegex(ValueError, 'not found'):
@@ -122,7 +122,9 @@ class GNMCustomFileLoadingTest(parameterized.TestCase):
     local_path = self.temp_dir / 'invalid_model.npz'
     np.savez(local_path, some_key='some_value')
 
-    with self.assertRaisesRegex(ValueError, "Missing fields:.*'version'"):
+    with self.assertRaisesRegex(
+        ValueError, 'Required attribute version not found in GNM data'
+    ):
       gnm_data_loader.load_model_from_custom_file(local_path)
 
   def test_load_model_from_custom_file_fails_for_unknown_version(self):

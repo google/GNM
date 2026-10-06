@@ -14,6 +14,9 @@
 
 """GNM data schema."""
 
+from collections.abc import Mapping, MutableMapping
+from typing import Any
+
 GNM_DATA_ATTRIBUTES = [
     'version',
     'variant',
@@ -39,3 +42,37 @@ GNM_DATA_ATTRIBUTES = [
     'vertex_groups',
     'vertex_group_names',
 ]
+
+
+def get_extra_fields(model_data: Mapping[str, Any]) -> list[str]:
+  """Lists extra fields not in GNM_DATA_ATTRIBUTES.
+
+  Args:
+    model_data: The GNM model data dictionary.
+
+  Returns:
+    A list of extra field names.
+  """
+  expected = set(GNM_DATA_ATTRIBUTES)
+  return [k for k in model_data if k not in expected]
+
+
+def strip_extra_fields(model_data: MutableMapping[str, Any]) -> None:
+  """Strips extra fields not in GNM_DATA_ATTRIBUTES in place.
+
+  Args:
+    model_data: The GNM model data dictionary.
+  """
+  for extra in get_extra_fields(model_data):
+    del model_data[extra]
+
+
+def get_missing_fields(model_data: Mapping[str, Any]) -> list[str]:
+  """Returns a list of required fields missing from the GNM model data."""
+  expected_fields = set(GNM_DATA_ATTRIBUTES)
+  return [f for f in expected_fields if f not in model_data]
+
+
+def is_model_data_valid(model_data: Mapping[str, Any]) -> bool:
+  """Returns True if model_data has no missing and no extra fields."""
+  return not get_extra_fields(model_data) and not get_missing_fields(model_data)

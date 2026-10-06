@@ -20,8 +20,10 @@ from collections.abc import Mapping
 import typing
 from typing import Any, Self
 
+from absl import logging
 from etils import epath
 from gnm.shape import gnm_data_loader
+from gnm.shape import gnm_data_schema
 
 
 class GNMFactoryMethodsMixin:
@@ -53,4 +55,19 @@ class GNMFactoryMethodsMixin:
       A GNM instance loaded with the model weights.
     """
     model_data = gnm_data_loader.load_model_from_custom_file(model_file)
+    extra_fields = gnm_data_schema.get_extra_fields(model_data)
+    missing_fields = gnm_data_schema.get_missing_fields(model_data)
+    if missing_fields:
+      raise ValueError(
+          f'Failed to load the custom GNM model data from "{model_file}".'
+          f' Missing fields: {missing_fields}.'
+      )
+    if extra_fields:
+      logging.warning(
+          'The custom GNM model file "%s" contains extra fields which will be'
+          ' ignored: %s.',
+          model_file,
+          ','.join(extra_fields),
+      )
+      gnm_data_schema.strip_extra_fields(model_data)
     return cls._from_model_data(model_data)
