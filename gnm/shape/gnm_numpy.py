@@ -32,11 +32,10 @@ Example usage:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-from typing import Any
 
 from absl import logging
+from etils import enp
 from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
@@ -116,12 +115,9 @@ class GNM(gnm_xnp.GNM):
   """
 
   @classmethod
-  def _from_model_data(
-      cls,
-      model_data: Mapping[str, Any],
-  ) -> GNM:
-    """Creates a GNM instance from model data."""
-    return cls._from_model_data_with_xnp(model_data, xnp=np)
+  def _get_np_module(cls) -> enp.NpModule:
+    """Returns the NumPy backend module."""
+    return np
 
   def compute_vertex_normals(
       self,

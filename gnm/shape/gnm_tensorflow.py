@@ -34,9 +34,7 @@ Usage:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-from typing import Any
 
 from absl import logging
 from etils import enp
@@ -119,12 +117,9 @@ class GNM(gnm_xnp.GNM):
   """
 
   @classmethod
-  def _from_model_data(
-      cls,
-      model_data: Mapping[str, Any],
-  ) -> GNM:
-    """Creates a TensorFlow GNM instance from model data."""
-    return cls._from_model_data_with_xnp(model_data, xnp=enp.lazy.tnp)
+  def _get_np_module(cls) -> enp.NpModule:
+    """Returns the TensorFlow NumPy backend module."""
+    return enp.lazy.tnp
 
   def compute_vertex_normals(
       self,

@@ -38,11 +38,10 @@ Usage:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-from typing import Any
 
 from absl import logging
+from etils import enp
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
@@ -117,12 +116,9 @@ class GNM(gnm_xnp.GNM):
   _shape_error_type = jt.TypeCheckError
 
   @classmethod
-  def _from_model_data(
-      cls,
-      model_data: Mapping[str, Any],
-  ) -> GNM:
-    """Creates a JAX GNM instance from model data."""
-    return cls._from_model_data_with_xnp(model_data, xnp=jnp)
+  def _get_np_module(cls) -> enp.NpModule:
+    """Returns the JAX NumPy backend module."""
+    return jnp
 
   def compute_vertex_normals(
       self,
