@@ -442,6 +442,9 @@ class GNMNumpyTest(parameterized.TestCase):
         np.unique(np.asarray(gnm_np.edge_list), axis=0),
         np.unique(quad_edges, axis=0),
     )
+    self.assertLen(
+        gnm_np.edge_list, len(np.unique(gnm_np.edge_list, axis=0))
+    )
 
   @parameterized.parameters(get_group_subsets_test_cases())
   def test_group_subsets(self, version: str, variant: str, group_name: str):
