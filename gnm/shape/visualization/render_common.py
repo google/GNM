@@ -19,9 +19,10 @@ different `render_gnm` implementations: default scene parameters, texture
 loading, camera/projection helpers and batching utilities.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import functools
 from typing import Protocol
+import warnings
 
 from etils import epath
 from gnm.shape import gnm_numpy
@@ -41,6 +42,16 @@ EDGEFLOW_TEXTURE_BY_BODY_PART = immutabledict.immutabledict({
     gnm_numpy.GNMBodyPart.HEAD: _TEXTURES_DIR / 'edgeflow_bw_4k.png',
 })
 
+# The UDIM tile a texture given as a bare array (rather than a dict) applies to.
+SKIN_UDIM_TILE = gnm_numpy.UDIM_TILES[('skin',)]
+# The UDIM tiles that get the default iris texture when one is bundled
+# (see `EYE_TEXTURE_PATH`), unless the caller textures them explicitly.
+EYE_INTERIOR_UDIM_TILES = (
+    gnm_numpy.UDIM_TILES[('left_eye', '&eye_interiors')],
+    gnm_numpy.UDIM_TILES[('right_eye', '&eye_interiors')],
+)
+EYE_TEXTURE_PATH: epath.Path | None = None
+
 # Default parameters for scene.
 DEFAULT_IMAGE_SIZE = (240, 320)
 DEFAULT_CAMERA_DISTANCE = 2.0
@@ -56,7 +67,16 @@ class DefaultTexture:
 
 
 DEFAULT_TEXTURE = DefaultTexture()
-Texture = FloatArray | DefaultTexture | dict[str, FloatArray] | None
+# Textures are keyed by UDIM tile number. Keying them by GNM part name is
+# deprecated; such a texture is applied to every tile of the part.
+Texture = (
+    FloatArray
+    | DefaultTexture
+    | Mapping[int, FloatArray]
+    | Mapping[np.integer, FloatArray]
+    | Mapping[str, FloatArray]
+    | None
+)
 
 
 class BackendRenderFn(Protocol):
@@ -64,19 +84,26 @@ class BackendRenderFn(Protocol):
 
   Backend render functions accept batched scene parameters and rasterize or
   raytrace the scene, returning rendered images of shape (N, H, W, 3).
+
+  Texture coordinates are given per triangle corner in UDIM layout, so the
+  integer part of a corner's coordinates identifies its texture in `texture`
+  (see `udim.split_triangles_by_tile`). They are per corner rather than per
+  vertex because a vertex shared by triangles of different tiles has different
+  texture coordinates in each. Tiles absent from `texture` are rendered with
+  the backend's default appearance (e.g. plain white).
   """
 
   def __call__(
       self,
       vertices: FloatArray,
-      triangles: dict[str, np.ndarray],
+      triangles: np.ndarray,
       world_to_camera: FloatArray,
       camera_to_image: FloatArray,
       vertex_normals: FloatArray,
-      vertex_uvs: FloatArray,
+      triangle_uvs: FloatArray,
       vertex_colors: FloatArray,
       image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
-      texture: dict[str, np.ndarray] | None = None,
+      texture: Mapping[int, np.ndarray] | None = None,
       multisample_antialiasing: int = 1,
       background_color: FloatArray | None = None,
       alpha: float = 1.0,
@@ -139,19 +166,17 @@ def render_gnm_mesh(
 
   Raises:
     ValueError: If multiple_gnms=True but vertices is 2D, or if texture keys
-      are not GNM part names, or if batch dimensions are incompatible.
+      are not UDIM tile numbers, or if batch dimensions are incompatible.
   """
   width, height = image_size
 
-  triangle_dict = {}
-  all_triangle_indices = triangles
-  if isinstance(triangles, str):
-    all_triangle_indices = gnm_np.triangle_indices_for_group(triangles)
-
-  for part_name in gnm_np.mesh_component_names:
-    group_triangle_indices = gnm_np.triangle_indices_for_group(part_name)
-    intersection = np.intersect1d(group_triangle_indices, all_triangle_indices)
-    triangle_dict[part_name] = gnm_np.triangles[intersection]
+  triangle_indices = (
+      gnm_np.triangle_indices_for_group(triangles)
+      if isinstance(triangles, str)
+      else triangles
+  )
+  triangle_uvs = gnm_np.triangle_uvs_udim[triangle_indices]
+  selected_triangles = gnm_np.triangles[triangle_indices]
 
   if vertices is None:
     vertices = gnm_np.template_vertex_positions
@@ -225,13 +250,6 @@ def render_gnm_mesh(
 
   texture_dict = load_texture(gnm_np, texture)
   textures = list(texture_dict.values())
-  texture_keys = texture_dict.keys()
-  if not set(texture_keys).issubset(gnm_np.mesh_component_names):
-    missing_parts = set(texture_keys) - set(gnm_np.mesh_component_names)
-    raise ValueError(
-        f'Texture keys {missing_parts} are not GNM part names'
-        f' {gnm_np.mesh_component_names}.'
-    )
 
   # Find the maximum batch dimension that satisfies all batch-able arguments.
   try:
@@ -263,18 +281,18 @@ def render_gnm_mesh(
   world_to_camera = batchify(world_to_camera, 2)
   camera_to_image = batchify(camera_to_image, 2)
   background_color = batchify(background_color, 3)
-  batched_textures = {part: batchify(x, 3) for part, x in texture_dict.items()}
+  batched_textures = {tile: batchify(x, 3) for tile, x in texture_dict.items()}
 
   renders = backend_render_fn(
       vertices=vertices,
-      triangles=triangle_dict,
+      triangles=selected_triangles,
       world_to_camera=world_to_camera,
       camera_to_image=camera_to_image,
       image_size=image_size,
       texture=batched_textures,
       vertex_colors=vertex_colors,
       multisample_antialiasing=multisample_antialiasing,
-      vertex_uvs=gnm_np.vertex_uvs,
+      triangle_uvs=triangle_uvs,
       vertex_normals=vertex_normals,
       background_color=background_color,
       alpha=alpha,
@@ -813,18 +831,26 @@ def _vertex_group_mean(
 def load_texture(
     gnm_np: gnm_numpy.GNM,
     texture: Texture = DEFAULT_TEXTURE,
-) -> dict[str, npt.NDArray[np.uint8]]:
-  """Loads the texture as a (potentially batched) image.
+) -> dict[int, npt.NDArray[np.uint8]]:
+  """Loads the texture of each textured UDIM tile as a batchable image.
 
   Args:
     gnm_np: The GNM model.
     texture: The texture to load. If DEFAULT_TEXTURE, will load the edgeflow
-      texture. If an ndarray, will use the given texture for skin. If a dict,
-      will use the given texture for each part. If None, will use a white
-      (plain) texture.
+      texture for the skin tile. If an ndarray, will use the given texture for
+      the skin tile. In both cases, the eye-interior tiles of the GNM also get
+      the default iris texture when one is bundled (see `EYE_TEXTURE_PATH`). If
+      a mapping, will use the given texture for each UDIM tile (or, deprecated,
+      for every tile of each GNM part name) and nothing else. If None, no tile
+      is textured.
 
   Returns:
-    The texture image, [0-255] uint8, (..., H, W, 3).
+    The texture image of each textured UDIM tile, [0-255] uint8 in linear color
+    space, (..., H, W, 3). Tiles without a texture are absent and left to the
+    backend's default appearance.
+
+  Raises:
+    ValueError: If a texture key is not a UDIM tile or part name of the GNM.
   """
   texture_dict = {}
   if texture is DEFAULT_TEXTURE:
@@ -832,16 +858,21 @@ def load_texture(
     if edgeflow_path is not None:
       edgeflow = load_edgeflow_texture(edgeflow_path)
       if edgeflow is not None:
-        texture_dict['skin'] = edgeflow[..., None]
+        texture_dict[SKIN_UDIM_TILE] = edgeflow[..., None]
+    texture_dict.update(_default_eye_textures(gnm_np))
   elif isinstance(texture, np.ndarray):
-    texture_dict['skin'] = texture
-  elif isinstance(texture, dict):
-    texture_dict = texture
-
-  # Fill remaining parts with white texture.
-  for component in gnm_np.mesh_component_names:
-    if component not in texture_dict:
-      texture_dict[component] = np.ones((64, 64, 1)).astype(np.float32)
+    texture_dict[SKIN_UDIM_TILE] = texture
+    texture_dict.update(_default_eye_textures(gnm_np))
+  elif isinstance(texture, Mapping):
+    for key, image in texture.items():
+      for tile in _udim_tiles_of_texture_key(key):
+        texture_dict[tile] = image
+    gnm_tiles = sorted(set(gnm_np.triangle_udim_tiles.tolist()))
+    if unknown_tiles := set(texture_dict) - set(gnm_tiles):
+      raise ValueError(
+          f'Texture keys {unknown_tiles} are not UDIM tiles of the GNM'
+          f' {gnm_tiles}.'
+      )
 
   def _to_3channel_uint8(texture_image: np.ndarray) -> npt.NDArray[np.uint8]:
     if texture_image.dtype != np.uint8:
@@ -850,11 +881,59 @@ def load_texture(
       texture_image = np.repeat(texture_image, 3, axis=-1)
     return texture_image
 
-  texture_dict = {
-      part: _to_3channel_uint8(texture_dict[part]) for part in texture_dict
-  }
+  return {tile: _to_3channel_uint8(x) for tile, x in texture_dict.items()}
 
-  return texture_dict
+
+@functools.cache
+def _load_eye_texture(texture_path: epath.Path) -> FloatArray:
+  """Loads the default iris texture in linear color space."""
+  with texture_path.open('rb') as f:
+    srgb = (
+        imageio.imread(f)[..., :3].astype(np.float32) / np.iinfo(np.uint8).max
+    )
+  # Backends treat textures as linear color; the PNG is sRGB-encoded.
+  linear = _srgb_to_linear(srgb)
+  linear.flags.writeable = False
+  return linear
+
+
+def _srgb_to_linear(srgb: FloatArray) -> FloatArray:
+  """Converts sRGB values in [0, 1] to linear color space (IEC 61966-2-1)."""
+  return np.where(
+      srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4
+  )
+
+
+def _default_eye_textures(gnm_np: gnm_numpy.GNM) -> dict[int, FloatArray]:
+  """Returns the default iris texture for each eye-interior tile of the GNM."""
+  if EYE_TEXTURE_PATH is None:
+    return {}
+  gnm_tiles = set(gnm_np.triangle_udim_tiles.tolist())
+  eye_tiles = [tile for tile in EYE_INTERIOR_UDIM_TILES if tile in gnm_tiles]
+  if not eye_tiles:
+    return {}
+  eye_texture = _load_eye_texture(EYE_TEXTURE_PATH)
+  return {tile: eye_texture for tile in eye_tiles}
+
+
+def _udim_tiles_of_texture_key(key: int | np.integer | str) -> list[int]:
+  """Returns the UDIM tiles a texture key denotes: a tile, or a GNM part."""
+  if not isinstance(key, str):
+    return [int(key)]  # Also accepts numpy integers.
+  warnings.warn(
+      'Keying textures by GNM part name is deprecated, key them by UDIM tile'
+      ' number instead (see gnm_numpy.UDIM_TILES).',
+      DeprecationWarning,
+      # Point at the caller of render_gnm(): load_texture, render_gnm_mesh and
+      # render_gnm are the frames in between.
+      stacklevel=5,
+  )
+  tiles = [
+      tile for groups, tile in gnm_numpy.UDIM_TILES.items() if key in groups
+  ]
+  if not tiles:
+    raise ValueError(f'Texture key {key!r} is not a GNM part name.')
+  return tiles
 
 
 def _adjust_scalar_shape(

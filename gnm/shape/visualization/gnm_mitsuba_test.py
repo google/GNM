@@ -79,18 +79,13 @@ class GNMMitsubaTest(parameterized.TestCase):
     vertices = gnm_np.template_vertex_positions[None, :, :]
     vertices = self.broadcast(vertices, num_frames)
 
-    triangles = {
-        component_name: gnm_np.triangles_group(component_name)
-        for component_name in gnm_np.mesh_component_names
-    }
-
     color = gnm_mitsuba.render(
         vertices=vertices,
-        triangles=triangles,
+        triangles=gnm_np.triangles,
         world_to_camera=self.broadcast(self.world_to_camera, num_frames),
         camera_to_image=self.broadcast(self.camera_to_image, num_frames),
         vertex_normals=gnm_np.compute_vertex_normals(vertices),
-        vertex_uvs=gnm_np.vertex_uvs,
+        triangle_uvs=gnm_np.triangle_uvs_udim,
         vertex_colors=np.ones_like(vertices),
         image_size=(240, 320),
     )
@@ -179,24 +174,20 @@ class GNMMitsubaTest(parameterized.TestCase):
     self.assertFalse(mesh.has_attribute('vertex_colors'))
 
   def test_render_partial_texture_dict(self):
-    """Tests that missing parts in texture dict fall back to default texture."""
+    """Tests that missing tiles in texture dict fall back to default texture."""
     gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
     vertices = gnm_np.template_vertex_positions[None, None, ...]
-    triangles = {
-        component_name: gnm_np.triangles_group(component_name)
-        for component_name in gnm_np.mesh_component_names
-    }
-    # Only provide texture for 'skin', omitting other parts like eye_exteriors
+    # Only provide a texture for the skin tile, omitting the other tiles.
     partial_texture = {
-        'skin': np.ones((1, 16, 16, 3), dtype=np.float32),
+        gnm_numpy.UDIM_TILES[('skin',)]: np.ones((1, 16, 16, 3), np.float32),
     }
     color = gnm_mitsuba.render(
         vertices=vertices,
-        triangles=triangles,
+        triangles=gnm_np.triangles,
         world_to_camera=self.broadcast(self.world_to_camera, 1),
         camera_to_image=self.broadcast(self.camera_to_image, 1),
         vertex_normals=gnm_np.compute_vertex_normals(vertices),
-        vertex_uvs=gnm_np.vertex_uvs,
+        triangle_uvs=gnm_np.triangle_uvs_udim,
         vertex_colors=np.ones_like(vertices),
         image_size=(240, 320),
         texture=partial_texture,
@@ -207,18 +198,17 @@ class GNMMitsubaTest(parameterized.TestCase):
     """Tests that non-square pixels raise an error."""
     gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
     vertices = gnm_np.template_vertex_positions[None, None, ...]
-    triangles = {'skin': gnm_np.triangles}
     non_square_c2i = self.camera_to_image.copy()
     non_square_c2i[0, 0] = 500.0
     non_square_c2i[1, 1] = 600.0
     with self.assertRaisesRegex(NotImplementedError, 'square pixels'):
       gnm_mitsuba.render(
           vertices=vertices,
-          triangles=triangles,
+          triangles=gnm_np.triangles,
           world_to_camera=self.broadcast(self.world_to_camera, 1),
           camera_to_image=self.broadcast(non_square_c2i, 1),
           vertex_normals=gnm_np.compute_vertex_normals(vertices),
-          vertex_uvs=gnm_np.vertex_uvs,
+          triangle_uvs=gnm_np.triangle_uvs_udim,
           vertex_colors=np.ones_like(vertices),
           image_size=(240, 320),
       )
@@ -227,17 +217,16 @@ class GNMMitsubaTest(parameterized.TestCase):
     """Tests that skew raises an error."""
     gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
     vertices = gnm_np.template_vertex_positions[None, None, ...]
-    triangles = {'skin': gnm_np.triangles}
     skew_c2i = self.camera_to_image.copy()
     skew_c2i[0, 1] = 10.0
     with self.assertRaisesRegex(NotImplementedError, 'zero skew'):
       gnm_mitsuba.render(
           vertices=vertices,
-          triangles=triangles,
+          triangles=gnm_np.triangles,
           world_to_camera=self.broadcast(self.world_to_camera, 1),
           camera_to_image=self.broadcast(skew_c2i, 1),
           vertex_normals=gnm_np.compute_vertex_normals(vertices),
-          vertex_uvs=gnm_np.vertex_uvs,
+          triangle_uvs=gnm_np.triangle_uvs_udim,
           vertex_colors=np.ones_like(vertices),
           image_size=(240, 320),
       )

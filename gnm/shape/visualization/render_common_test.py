@@ -25,6 +25,16 @@ import numpy as np
 
 _TupleOfInts = tuple[int, ...]
 
+# The UDIM tiles textured by default on a head GNM.
+_DEFAULT_TEXTURE_TILES = (
+    render_common.SKIN_UDIM_TILE,
+    *(
+        render_common.EYE_INTERIOR_UDIM_TILES
+        if render_common.EYE_TEXTURE_PATH is not None
+        else ()
+    ),
+)
+
 
 def _get_random_parameters(
     batch_dims: _TupleOfInts,
@@ -260,23 +270,58 @@ class TestLoadTexture(parameterized.TestCase):
       for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
   ])
   def test_load_default_texture(self, version):
-    """Tests that load_texture returns the default texture."""
+    """Tests that load_texture returns the default skin and eye textures."""
     gnm_np = self.gnms[version]
     textures = render_common.load_texture(gnm_np)
-    self.assertIsInstance(textures, dict)
-    self.assertIn('skin', textures)
-    skin_tex = textures['skin']
-    self.assertEqual(skin_tex.dtype, np.uint8)
-    self.assertEqual(skin_tex.shape[-1], 3)
+    self.assertCountEqual(textures, _DEFAULT_TEXTURE_TILES)
+    for tile, texture in textures.items():
+      self.assertEqual(texture.dtype, np.uint8, msg=f'tile {tile}')
+      self.assertEqual(texture.shape[-1], 3, msg=f'tile {tile}')
 
   def test_load_custom_numpy_texture(self):
-    """Tests that load_texture returns the custom texture."""
+    """Tests that a bare array textures the skin, with default eyes."""
     gnm_np = self.gnms[gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]]
     custom_tex = np.ones((32, 32, 3), dtype=np.float32) * 0.5
     textures = render_common.load_texture(gnm_np, texture=custom_tex)
-    self.assertIn('skin', textures)
-    self.assertEqual(textures['skin'].dtype, np.uint8)
-    self.assertEqual(textures['skin'].shape, (32, 32, 3))
+    self.assertCountEqual(textures, _DEFAULT_TEXTURE_TILES)
+    skin_tex = textures[render_common.SKIN_UDIM_TILE]
+    self.assertEqual(skin_tex.dtype, np.uint8)
+    self.assertEqual(skin_tex.shape, (32, 32, 3))
+
+    # A mapping is taken literally: no default eye textures.
+    textures = render_common.load_texture(
+        gnm_np, texture={render_common.SKIN_UDIM_TILE: custom_tex}
+    )
+    self.assertEqual(list(textures), [render_common.SKIN_UDIM_TILE])
+
+  def test_load_no_texture(self):
+    """Tests that load_texture returns no tile for texture=None."""
+    gnm_np = self.gnms[gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]]
+    self.assertEmpty(render_common.load_texture(gnm_np, texture=None))
+
+  @parameterized.named_parameters(('int', int), ('numpy_int', np.int64))
+  def test_load_tile_keyed_texture(self, key_type):
+    """Tests that textures keyed by (numpy) tile numbers map to their tile."""
+    gnm_np = self.gnms[gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]]
+    tile = gnm_numpy.UDIM_TILES[('tongue',)]
+    tongue_tex = np.zeros((8, 8, 3), dtype=np.float32)
+    textures = render_common.load_texture(gnm_np, {key_type(tile): tongue_tex})
+    self.assertEqual(list(textures), [tile])
+    np.testing.assert_array_equal(textures[tile], 0)
+
+  def test_load_part_name_texture_is_deprecated(self):
+    """Tests that part-named textures warn and cover all tiles of the part."""
+    gnm_np = self.gnms[gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]]
+    eye_tex = np.zeros((8, 8, 3), dtype=np.float32)
+    with self.assertWarns(DeprecationWarning):
+      textures = render_common.load_texture(gnm_np, {'left_eye': eye_tex})
+    tiles = gnm_numpy.UDIM_TILES
+    keys = [('left_eye', '&eye_interiors'), ('left_eye', '&eye_exteriors')]
+    self.assertCountEqual(textures, [tiles[key] for key in keys])
+    for key in keys:
+      np.testing.assert_array_equal(textures[tiles[key]], 0)
+    with self.assertRaisesRegex(ValueError, "'wrong_part' is not a GNM part"):
+      render_common.load_texture(gnm_np, {'wrong_part': eye_tex})
 
 
 class TestProjectPointsForGnm(parameterized.TestCase):
@@ -391,11 +436,17 @@ class TestRenderGNMMesh(parameterized.TestCase):
 
     self.assertEqual(res.shape, (48, 64, 3))
     self.assertIn('vertices', passed_kwargs)
-    self.assertIn('triangles', passed_kwargs)
     self.assertIn('world_to_camera', passed_kwargs)
     self.assertIn('camera_to_image', passed_kwargs)
-    self.assertIn('texture', passed_kwargs)
     self.assertIn('vertex_colors', passed_kwargs)
+    selected = self.gnm_np.triangle_indices_for_group('~eye_exteriors')
+    np.testing.assert_array_equal(
+        passed_kwargs['triangles'], self.gnm_np.triangles[selected]
+    )
+    np.testing.assert_array_equal(
+        passed_kwargs['triangle_uvs'], self.gnm_np.triangle_uvs_udim[selected]
+    )
+    self.assertCountEqual(passed_kwargs['texture'], _DEFAULT_TEXTURE_TILES)
     self.assertEqual(passed_kwargs['image_size'], image_size)
 
   def test_render_gnm_mesh_convert_cameras(self):
@@ -449,13 +500,11 @@ class TestRenderGNMMesh(parameterized.TestCase):
           multiple_gnms=True,
       )
 
-    with self.assertRaisesRegex(ValueError, 'are not GNM part names'):
+    with self.assertRaisesRegex(ValueError, 'are not UDIM tiles'):
       render_common.render_gnm_mesh(
           gnm_np=self.gnm_np,
           backend_render_fn=mock_backend,
-          texture={
-              'invalid_component': np.zeros((10, 10, 3), dtype=np.float32)
-          },
+          texture={1099: np.zeros((10, 10, 3), dtype=np.float32)},
       )
 
     with self.assertRaisesRegex(

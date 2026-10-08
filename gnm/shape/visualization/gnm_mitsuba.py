@@ -27,6 +27,7 @@ from typing import Any
 import cv2
 import drjit as dr
 from gnm.shape.visualization import integrators
+from gnm.shape.visualization import udim
 import mitsuba as mi
 import numpy as np
 import numpy.typing as npt
@@ -295,15 +296,15 @@ def _compute_world_light_direction(
 def render(
     *,
     vertices: npt.NDArray[np.floating],
-    triangles: Mapping[str, npt.NDArray[np.integer]],
+    triangles: npt.NDArray[np.integer],
     world_to_camera: npt.NDArray[np.floating],
     camera_to_image: npt.NDArray[np.floating],
     vertex_normals: npt.NDArray[np.floating],
-    vertex_uvs: npt.NDArray[np.floating],
+    triangle_uvs: npt.NDArray[np.floating],
     vertex_colors: npt.NDArray[np.floating],
     image_size: tuple[int, int] = (240, 320),
     texture: (
-        Mapping[str, npt.NDArray[np.floating] | npt.NDArray[np.uint8]] | None
+        Mapping[int, npt.NDArray[np.floating] | npt.NDArray[np.uint8]] | None
     ) = None,
     multisample_antialiasing: int = 1,
     background_color: npt.NDArray[np.floating] | None = None,
@@ -313,21 +314,22 @@ def render(
 ) -> npt.NDArray[np.float32]:
   """Render GNM meshes using Mitsuba.
 
-  N frames, M meshes.
+  N frames, M meshes. See `render_common.BackendRenderFn`.
 
   Args:
     vertices: The GNM vertices in world space, (N, M, V, 3).
-    triangles: A dictionary of part name to GNM triangles, (F_part, 3).
+    triangles: The GNM triangles to render, (F, 3).
     world_to_camera: The world-to-camera transform (OpenCV convention), (N, 4,
       4).
     camera_to_image: The camera-to-image transform (OpenCV convention), (N, 4,
       4) or (N, 3, 3).
     vertex_normals: The per-vertex normals to use for rendering, (N, M, V, 3).
-    vertex_uvs: The per-vertex UV coordinates to use for rendering, (V, 2).
+    triangle_uvs: The UV coordinates of the triangle corners in UDIM layout, (F,
+      3, 2).
     vertex_colors: The per-vertex colors to use for rendering, (N, M, V, 3).
     image_size: The width and height of the rendered image in pixels: (W, H).
-    texture: The per-part texture to use for rendering in linear space,
-      {part_name: (N, H, W, 3)}.
+    texture: The per-tile texture to use for rendering in linear space,
+      {udim_tile: (N, H, W, 3)}.
     multisample_antialiasing: Render with e.g., double resolution, and then
       downsample for anti-aliasing.
     background_color: The background color, float32 [0-1] (N, H, W, 3).
@@ -349,24 +351,30 @@ def render(
   render_width = width * multisample_antialiasing
   render_height = height * multisample_antialiasing
 
-  part_names = list(triangles.keys())
-  if texture is None:
-    texture_dict = {
-        part: np.ones((num_frames, 1, 1, 3), dtype=np.float32)
-        for part in part_names
-    }
-  else:
-    texture_dict = texture
+  tile_split = udim.split_triangles_by_tile(triangle_uvs)
+  tiles = list(tile_split)
+  # Unweld each tile's triangles once so that each corner has its own UVs.
+  tile_geometry = {}
+  for tile, (tile_triangles, tile_uvs) in tile_split.items():
+    corners = triangles[tile_triangles].ravel()
+    faces = np.arange(corners.size, dtype=np.int32).reshape(-1, 3)
+    tile_geometry[tile] = (
+        corners,
+        faces,
+        tile_uvs.reshape(-1, 2).astype(np.float32),
+    )
+  texture_dict = texture or {}
 
-  texture_bitmaps: dict[str, list[mi.Bitmap]] = {}
+  texture_bitmaps: dict[int, list[mi.Bitmap]] = {}
   max_tex_dim = max(render_width, render_height)
+  # Tiles without a texture are rendered plain white.
   default_texture = np.ones((num_frames, 1, 1, 3), dtype=np.float32)
-  for part in part_names:
-    part_textures = texture_dict.get(part, default_texture)
+  for tile in tiles:
+    tile_textures = texture_dict.get(tile, default_texture)
     bitmaps = []
     for frame in range(num_frames):
-      tex_f = part_textures[frame].astype(np.float32)
-      if part_textures.dtype == np.uint8 or tex_f.max() > 1.0:
+      tex_f = tile_textures[frame].astype(np.float32)
+      if tile_textures.dtype == np.uint8 or tex_f.max() > 1.0:
         tex_f = tex_f / 255.0
       tex_f = np.clip(tex_f, 0.0, 1.0)
       h, w = tex_f.shape[:2]
@@ -379,7 +387,7 @@ def render(
         if tex_f.ndim == 2:
           tex_f = tex_f[..., None]
       bitmaps.append(mi.Bitmap(tex_f))
-    texture_bitmaps[part] = bitmaps
+    texture_bitmaps[tile] = bitmaps
 
   composited_frames = []
   tqdm_kwargs = dict(
@@ -428,34 +436,30 @@ def render(
 
     mesh_counter = 0
     for mesh_index in range(num_meshes):
-      for part in part_names:
-        faces = triangles[part]
-        if len(faces) == 0:
-          continue
+      for tile in tiles:
+        corners, faces, tile_uvs = tile_geometry[tile]
 
         props = mi.Properties()
         props['bsdf'] = mi.load_dict({
             'type': 'diffuse',
             'reflectance': {
                 'type': 'bitmap',
-                'bitmap': texture_bitmaps[part][frame],
+                'bitmap': texture_bitmaps[tile][frame],
                 'raw': True,
                 'filter_type': 'bilinear',
             },
         })
 
         mesh_part = create_mitsuba_mesh(
-            vertices=vertices[frame, mesh_index].astype(np.float32),
-            faces=faces.astype(np.int32),
-            texture_coordinates=vertex_uvs.astype(np.float32)
-            if vertex_uvs is not None
-            else None,
-            vertex_normals=vertex_normals[frame, mesh_index].astype(np.float32)
-            if vertex_normals is not None
-            else None,
-            vertex_colors=vertex_colors[frame, mesh_index].astype(np.float32)
-            if vertex_colors is not None
-            else None,
+            vertices=vertices[frame, mesh_index][corners].astype(np.float32),
+            faces=faces,
+            texture_coordinates=tile_uvs,
+            vertex_normals=vertex_normals[frame, mesh_index][corners].astype(
+                np.float32
+            ),
+            vertex_colors=vertex_colors[frame, mesh_index][corners].astype(
+                np.float32
+            ),
             properties=props,
             flip_texture_coordinates=True,
         )

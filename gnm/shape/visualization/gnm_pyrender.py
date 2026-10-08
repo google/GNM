@@ -24,6 +24,7 @@ import os
 import tempfile
 from typing import Any
 import cv2
+from gnm.shape.visualization import udim
 import numpy as np
 import tqdm
 
@@ -82,38 +83,39 @@ def _changed_flag(array: np.ndarray) -> np.ndarray:
 
 def render(
     vertices: np.ndarray,
-    triangles: dict[str, np.ndarray],
+    triangles: np.ndarray,
     world_to_camera: np.ndarray,
     camera_to_image: np.ndarray,
     vertex_normals: np.ndarray,
-    vertex_uvs: np.ndarray,
+    triangle_uvs: np.ndarray,
     vertex_colors: np.ndarray,
     image_size: tuple[int, int] = (240, 320),
-    texture: dict[str, np.ndarray] | None = None,
+    texture: collections.abc.Mapping[int, np.ndarray] | None = None,
     multisample_antialiasing: int = 1,
     background_color: np.ndarray | None = None,
     alpha: float = 1.0,
     include_shading: bool = True,
     verbose: bool = False,
-    renderer_factory: (
-        collections.abc.Callable[[int, int], pyrender.OffscreenRenderer]
-    ) = DEFAULT_RENDERER_FACTORY,
+    renderer_factory: collections.abc.Callable[
+        [int, int], pyrender.OffscreenRenderer
+    ] = DEFAULT_RENDERER_FACTORY,
 ) -> np.ndarray:
   """Render GNM meshes.
 
-  N frames, M meshes.
+  N frames, M meshes. See `render_common.BackendRenderFn`.
 
   Args:
     vertices: The GNM vertices in world space, (N, M, V, 3).
-    triangles: A dictionary of part name to GNM triangles, (F_part, 3).
+    triangles: The GNM triangles to render, (F, 3).
     world_to_camera: The world-to-camera transform, (N, 4, 4).
     camera_to_image: The camera-to-image transform, (N, 4, 4).
     vertex_normals: The per-vertex normals to use for rendering, (N, M, V, 3).
-    vertex_uvs: The per-vertex UV coordinates to use for rendering, (V, 2).
+    triangle_uvs: The UV coordinates of the triangle corners in UDIM layout, (F,
+      3, 2).
     vertex_colors: The per-vertex colors to use for rendering, (N, M, V, 3).
     image_size: The width and height of the rendered image in pixels: (W, H).
-    texture: The per-part texture to use for rendering in linear space,
-      {part_name: (N, H, W, 3)}.
+    texture: The per-tile texture to use for rendering in linear space,
+      {udim_tile: (N, H, W, 3)}.
     multisample_antialiasing: Render with e.g., double resolution, and then
       downsample for anti-aliasing.
     background_color: The background color, float32 [0-1] (N, H, W, 3).
@@ -135,33 +137,39 @@ def render(
   render_width = width * multisample_antialiasing
   render_height = height * multisample_antialiasing
 
-  part_names = list(triangles.keys())
-  if texture is None:
-    texture = {
-        part: np.ones((num_frames, 1, 1, 3), dtype=np.float32)
-        for part in part_names
-    }
+  tile_split = udim.split_triangles_by_tile(triangle_uvs)
+  tiles = list(tile_split)
+  # Unweld each tile's triangles once so that each corner has its own UVs.
+  # Without indices, consecutive position triplets form the triangles.
+  tile_corners = {
+      tile: (triangles[tri].ravel(), uvs.reshape(-1, 2))
+      for tile, (tri, uvs) in tile_split.items()
+  }
+  # Tiles without a texture are rendered plain white.
+  default_texture = np.ones((num_frames, 1, 1, 3), dtype=np.float32)
+  texture = texture or {}
+  texture = {tile: texture.get(tile, default_texture) for tile in tiles}
 
   scene = pyrender.Scene(bg_color=_BLACK)
 
-  def _create_texture(frame: int, part: str) -> pyrender.Texture:
-    return pyrender.Texture(source=texture[part][frame], source_channels='RGB')
+  def _create_texture(frame: int, tile: int) -> pyrender.Texture:
+    return pyrender.Texture(source=texture[tile][frame], source_channels='RGB')
 
   def _create_mesh(frame: int, gnm_index: int) -> pyrender.Mesh:
-    """Set-up GNM mesh and texture."""
+    """Set-up GNM mesh and texture, with one primitive per UDIM tile."""
     primitives = []
-    for part in part_names:
+    for tile in tiles:
       material = pyrender.MetallicRoughnessMaterial(
           metallicFactor=0.0,
           roughnessFactor=1.0,
       )
+      corners, tile_uvs = tile_corners[tile]
       primitives.append(
           pyrender.Primitive(
-              positions=vertices[frame, gnm_index],
-              indices=triangles[part],
-              normals=vertex_normals[frame, gnm_index],
-              texcoord_0=vertex_uvs,
-              color_0=vertex_colors[frame, gnm_index],
+              positions=vertices[frame, gnm_index][corners],
+              normals=vertex_normals[frame, gnm_index][corners],
+              texcoord_0=tile_uvs,
+              color_0=vertex_colors[frame, gnm_index][corners],
               material=material,
           )
       )
@@ -170,9 +178,9 @@ def render(
   def _apply_texture(
       mesh_node: pyrender.Node,
       texture: pyrender.Texture | None,
-      part_index: int,
+      tile_index: int,
   ):
-    material = mesh_node.mesh.primitives[part_index].material
+    material = mesh_node.mesh.primitives[tile_index].material
     material.baseColorTexture = texture
 
   # Create a mesh per GNM.
@@ -203,7 +211,7 @@ def render(
 
   vertices_changed = _changed_flag(vertices)
   vertex_colors_changed = _changed_flag(vertex_colors)
-  texture_changed = {part: _changed_flag(texture[part]) for part in part_names}
+  texture_changed = {tile: _changed_flag(texture[tile]) for tile in tiles}
   world_to_camera_changed = _changed_flag(world_to_camera)
   camera_to_image_changed = _changed_flag(camera_to_image)
 
@@ -219,12 +227,12 @@ def render(
         if mesh_nodes[m] is not None:
           scene.remove_node(mesh_nodes[m])
         mesh_nodes[m] = scene.add(mesh)
-        for index in range(len(part_names)):
+        for index in range(len(tiles)):
           _apply_texture(mesh_nodes[m], texture_objects.get(index, None), index)
 
-    for index, part in enumerate(part_names):
-      if texture_changed[part][f]:
-        texture_objects[index] = _create_texture(f, part)
+    for index, tile in enumerate(tiles):
+      if texture_changed[tile][f]:
+        texture_objects[index] = _create_texture(f, tile)
         for m in range(num_meshes):
           mesh_node = mesh_nodes[m]
           if mesh_node is not None:
