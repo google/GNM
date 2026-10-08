@@ -246,6 +246,8 @@ class OSSDataLoadersTest(parameterized.TestCase):
         gnm_specs.GNMVariant.HEAD,
         cache_dir=self.temp_dir,
     )
+    expected_positions = np.array(data1['template_vertex_positions'])
+    data1['template_vertex_positions'][:] = 1.0
     data1['joint_names'].append('leaked_joint')
     data2 = oss_data_loaders.load_model_from_remote(
         gnm_specs.GNMMajorVersion.V3,
@@ -254,6 +256,9 @@ class OSSDataLoadersTest(parameterized.TestCase):
     )
 
     self.assertIsNot(data1, data2)
+    np.testing.assert_array_equal(
+        data2['template_vertex_positions'], expected_positions
+    )
     self.assertNotIn('leaked_joint', data2['joint_names'])
 
   def test_load_model_from_remote_with_str_cache_dir(self):
