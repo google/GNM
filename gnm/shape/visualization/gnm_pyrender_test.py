@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from etils import epath
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import gnm_pyrender
 import mediapy as media
@@ -41,9 +42,8 @@ class GNMPyrenderTest(parameterized.TestCase):
   def setUpClass(cls):
     super().setUpClass()
     cls.gnms = {
-        version: gnm_numpy.GNM.from_remote(
-            gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-            gnm_numpy.GNMVariant.HEAD,
+        version: gnm_test_utils.load_gnm(
+            gnm_numpy.GNM, version, gnm_numpy.GNMVariant.HEAD
         )
         for version in _MAINTAINED_MAJOR_GNM_VERSIONS
     }

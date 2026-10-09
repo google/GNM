@@ -14,9 +14,12 @@
 
 """Tests for vertex colors visualization."""
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import vertex_colors
 import numpy as np
@@ -35,15 +38,18 @@ class VertexColorsTest(parameterized.TestCase):
   def setUpClass(cls):
     super().setUpClass()
 
-    cls.models = {}
-    for version in _MAINTAINED_MAJOR_GNM_VERSIONS:
-      cls.models[version] = {}
-      for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]:
-        if variant in _SUPPORTED_VARIANTS:
-          cls.models[version][variant] = gnm_numpy.GNM.from_remote(
-              gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-              gnm_numpy.GNMVariant(variant),
-          )
+    cls.models = gnm_test_utils.LazyGNMDict(
+        load_fn=functools.partial(gnm_test_utils.load_gnm, gnm_numpy.GNM),
+        variants_by_version={
+            version: [
+                variant
+                for variant in _MAJOR_VERSION_TO_VARIANTS_MAP[version]
+                if variant in _SUPPORTED_VARIANTS
+            ]
+            for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+        },
+    )
+    cls.addClassCleanup(cls.models.clear)
 
   @parameterized.product(
       version=_MAINTAINED_MAJOR_GNM_VERSIONS,
@@ -51,10 +57,7 @@ class VertexColorsTest(parameterized.TestCase):
   )
   def test_get_vertex_colors(self, version, variant):
     """Tests we can get per-vertex colors."""
-    if variant not in self.models[version]:
-      variant_name = variant.value if hasattr(variant, 'value') else variant
-      self.skipTest(f'variant {variant_name} not supported in {version}.')
-    gnm_np = self.models[version][variant]
+    gnm_np = self.models.get_or_skip(version, variant)
     colors = vertex_colors.get_vertex_colors(gnm_np)
 
     # Sanity check on color values.
@@ -65,10 +68,7 @@ class VertexColorsTest(parameterized.TestCase):
       variant=[gnm_numpy.GNMVariant.HEAD],
   )
   def test_gets_inner_head_colors(self, version, variant):
-    if variant not in self.models[version]:
-      variant_name = variant.value if hasattr(variant, 'value') else variant
-      self.skipTest(f'variant {variant_name} not supported in {version}.')
-    gnm_np = self.models[version][variant]
+    gnm_np = self.models.get_or_skip(version, variant)
     colors = vertex_colors.get_vertex_colors_for_inner_head(gnm_np)
     groups = (
         ('mouth_sock',),
@@ -94,4 +94,4 @@ class VertexColorsTest(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  absltest.main()
+  absltest.main(testLoader=gnm_test_utils.ModelOrderedTestLoader())
