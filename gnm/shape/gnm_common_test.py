@@ -23,6 +23,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from etils import enp
 from gnm.shape import gnm_common
+import jax
 import numpy as np
 
 # The array backends supported by the GNM math, as (name, xnp module) pairs.
@@ -212,6 +213,27 @@ class JointTransformsWorldTest(parameterized.TestCase):
         transforms[..., :3, 3][1], [0.0, 1.0, 0.0], atol=1e-5
     )
 
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+    joints = xnp.asarray(self.joints, dtype=xnp.float32)
+
+    transforms_rot = np.asarray(
+        gnm_common.joint_transforms_world(
+            joints, rotations, translation, self.parents
+        )
+    )
+    transforms_mat = np.asarray(
+        gnm_common.joint_transforms_world_from_rotation_matrices(
+            joints, rotation_matrices, translation, self.parents
+        )
+    )
+    np.testing.assert_allclose(transforms_mat, transforms_rot, atol=1e-5)
+
 
 class LinearBlendSkinningTest(parameterized.TestCase):
   """Tests for linear_blend_skinning."""
@@ -269,6 +291,135 @@ class LinearBlendSkinningTest(parameterized.TestCase):
         self.parents,
     )
     self.assertEqual(tuple(posed.shape), (4, 3, 3))
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+    vertices = xnp.asarray(self.vertices, dtype=xnp.float32)
+    joints = xnp.asarray(self.joints, dtype=xnp.float32)
+    weights = xnp.asarray(self.weights, dtype=xnp.float32)
+
+    posed_rot = np.asarray(
+        gnm_common.linear_blend_skinning(
+            vertices, joints, rotations, translation, weights, self.parents
+        )
+    )
+    posed_mat = np.asarray(
+        gnm_common.linear_blend_skinning_from_rotation_matrices(
+            vertices,
+            joints,
+            rotation_matrices,
+            translation,
+            weights,
+            self.parents,
+        )
+    )
+    np.testing.assert_allclose(posed_mat, posed_rot, atol=1e-5)
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_apply_with_transforms_matches_from_rotation_matrices(
+      self, xnp: enp.NpModule
+  ) -> None:
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+    vertices = xnp.asarray(self.vertices, dtype=xnp.float32)
+    joints = xnp.asarray(self.joints, dtype=xnp.float32)
+    weights = xnp.asarray(self.weights, dtype=xnp.float32)
+
+    transforms = gnm_common.joint_transforms_world_from_rotation_matrices(
+        joints, rotation_matrices, translation, self.parents
+    )
+    posed_with_transforms = np.asarray(
+        gnm_common.apply_linear_blend_skinning_with_transforms(
+            local_vertices=vertices,
+            joint_positions=joints,
+            joint_transforms_world_local=transforms,
+            skinning_weights=weights,
+        )
+    )
+    posed_from_mat = np.asarray(
+        gnm_common.linear_blend_skinning_from_rotation_matrices(
+            vertices,
+            joints,
+            rotation_matrices,
+            translation,
+            weights,
+            self.parents,
+        )
+    )
+    np.testing.assert_allclose(posed_with_transforms, posed_from_mat, atol=1e-5)
+
+  def test_jax_symbolic_batch_with_numpy_template_arrays(self) -> None:
+    (symbolic_b,) = jax.export.symbolic_shape('b')
+    identity_spec = jax.ShapeDtypeStruct((symbolic_b, 2), jax.numpy.float32)
+    expression_spec = jax.ShapeDtypeStruct((symbolic_b, 2), jax.numpy.float32)
+    rotation_matrices_spec = jax.ShapeDtypeStruct(
+        (symbolic_b, 2, 3, 3), jax.numpy.float32
+    )
+    translation_spec = jax.ShapeDtypeStruct((symbolic_b, 3), jax.numpy.float32)
+
+    template_vertices = np.asarray(self.vertices, dtype=np.float32)
+    template_joints = np.asarray(self.joints, dtype=np.float32)
+    vertex_identity_basis = np.ones((2, 3, 3), dtype=np.float32) * 0.01
+    joint_identity_basis = np.ones((2, 2, 3), dtype=np.float32) * 0.02
+    expression_basis = np.ones((2, 3, 3), dtype=np.float32) * 0.03
+    skinning_weights = np.asarray(self.weights, dtype=np.float32)
+    pose_correctives_regressor = (
+        np.arange(2 * 9 * 3 * 3).reshape(2 * 9, 3 * 3).astype(np.float32)
+        * 0.001
+    )
+
+    def _pipeline_fn(identity, expression, rotation_matrices, translation):
+      vertices_bind_pose = gnm_common.vertex_positions_bind_pose(
+          identity=identity,
+          expression=expression,
+          template_vertex_positions=template_vertices,
+          vertex_identity_basis=vertex_identity_basis,
+          expression_basis=expression_basis,
+      )
+      joints = gnm_common.joint_positions_bind_pose(
+          identity=identity,
+          template_joint_positions=template_joints,
+          joint_identity_basis=joint_identity_basis,
+      )
+      pose_correctives = (
+          gnm_common.compute_pose_correctives_from_rotation_matrices(
+              rotation_matrices=rotation_matrices,
+              pose_correctives_regressor=pose_correctives_regressor,
+              template_vertex_positions=template_vertices,
+              num_joints=2,
+              num_vertices=3,
+          )
+      )
+      joint_transforms = (
+          gnm_common.joint_transforms_world_from_rotation_matrices(
+              joints, rotation_matrices, translation, tuple(self.parents)
+          )
+      )
+      vertices_posed = gnm_common.apply_linear_blend_skinning_with_transforms(
+          local_vertices=vertices_bind_pose + pose_correctives,
+          joint_positions=joints,
+          joint_transforms_world_local=joint_transforms,
+          skinning_weights=skinning_weights,
+      )
+      return vertices_bind_pose, vertices_posed, joint_transforms
+
+    exported = jax.export.export(jax.jit(_pipeline_fn))(
+        identity_spec,
+        expression_spec,
+        rotation_matrices_spec,
+        translation_spec,
+    )
+    self.assertEqual(exported.out_avals[0].shape, (symbolic_b, 3, 3))
+    self.assertEqual(exported.out_avals[1].shape, (symbolic_b, 3, 3))
+    self.assertEqual(exported.out_avals[2].shape, (symbolic_b, 2, 4, 4))
 
 
 class BindPoseTest(parameterized.TestCase):
@@ -375,6 +526,56 @@ class PoseCorrectivesTest(parameterized.TestCase):
         num_vertices=3,
     )
     self.assertEqual(tuple(result.shape), (4, 3, 3))
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    template = xnp.asarray(np.ones((3, 3)), dtype=xnp.float32)
+    regressor = xnp.asarray(
+        np.arange(2 * 9 * 3 * 3).reshape(2 * 9, 3 * 3) / 100.0,
+        dtype=xnp.float32,
+    )
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+
+    correctives_rot = np.asarray(
+        gnm_common.compute_pose_correctives(
+            rotations,
+            regressor,
+            template,
+            num_joints=2,
+            num_vertices=3,
+        )
+    )
+    correctives_mat = np.asarray(
+        gnm_common.compute_pose_correctives_from_rotation_matrices(
+            rotation_matrices,
+            regressor,
+            template,
+            num_joints=2,
+            num_vertices=3,
+        )
+    )
+    np.testing.assert_allclose(correctives_mat, correctives_rot, atol=1e-5)
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_early_return_preserves_rotation_matrices_dtype(
+      self, xnp: enp.NpModule
+  ) -> None:
+    template = xnp.asarray(np.ones((3, 3)), dtype=xnp.float32)
+    rotation_matrices = xnp.asarray(
+        np.broadcast_to(np.eye(3), (2, 2, 3, 3)), dtype=xnp.float64
+    )
+    result = gnm_common.compute_pose_correctives_from_rotation_matrices(
+        rotation_matrices=rotation_matrices,
+        pose_correctives_regressor=None,
+        template_vertex_positions=template,
+        num_joints=2,
+        num_vertices=3,
+    )
+    self.assertEqual(tuple(result.shape), (2, 3, 3))
+    self.assertEqual(result.dtype, rotation_matrices.dtype)
 
 
 class TestConstantBatch(parameterized.TestCase):

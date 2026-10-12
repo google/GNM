@@ -234,21 +234,21 @@ def axis_angle_to_rotation_matrix(
   return matrix
 
 
-def joint_transforms_world(
+def joint_transforms_world_from_rotation_matrices(
     joints: enpt.FloatArray['... J 3'],
-    rotations: enpt.FloatArray['... J 3'],
+    rotation_matrices: enpt.FloatArray['... J 3 3'],
     translation: enpt.FloatArray['... 3'],
     joint_parent_indices: Sequence[int],
 ) -> enpt.FloatArray['... J 4 4']:
-  """Computes the world-space transformation matrices for each joint.
+  """Computes world-space joint transforms from rotation matrices.
 
   This function traverses the joint hierarchy and applies forward kinematics
   to compute the global/world space transforms of each joint, combining
-  joint rotations and joint translations.
+  joint rotation matrices and joint translations.
 
   Args:
     joints: The bind-pose joints positions. Shape: `(..., J, 3)`.
-    rotations: The joint rotations as axis-angle vectors. Shape: `(..., J, 3)`.
+    rotation_matrices: The joint rotation matrices. Shape: `(..., J, 3, 3)`.
     translation: The translation vector for the root joint. Shape: `(..., 3)`.
     joint_parent_indices: A sequence of parent indices for each joint. The root
       joint must have itself or a sentinel as parent (usually index 0 has parent
@@ -269,11 +269,6 @@ def joint_transforms_world(
   )
   joint_parents = take(joints, parent_indices_except_root, axis=-2, xnp=xnp)
 
-  # Since we cannot do in-place assignments, we construct the local
-  # transformation matrices by combining rotation matrices and translation
-  # vectors.
-  local_rotations = axis_angle_to_rotation_matrix(rotations)
-
   # Construct local translations.
   root_translation = joints[..., 0, :] + translation
   non_root_translations = joints[..., 1:, :] - joint_parents
@@ -284,7 +279,7 @@ def joint_transforms_world(
   # Combine rotation and translation.
   # local_transforms: (..., J, 3, 4)
   local_transforms_3x4 = xnp.concatenate(
-      [local_rotations, local_translations[..., None]], axis=-1
+      [rotation_matrices, local_translations[..., None]], axis=-1
   )
 
   # Append [0, 0, 0, 1] row.
@@ -316,6 +311,131 @@ def joint_transforms_world(
   return xnp.stack(world_transforms_list, axis=-3)
 
 
+def joint_transforms_world(
+    joints: enpt.FloatArray['... J 3'],
+    rotations: enpt.FloatArray['... J 3'],
+    translation: enpt.FloatArray['... 3'],
+    joint_parent_indices: Sequence[int],
+) -> enpt.FloatArray['... J 4 4']:
+  """Computes the world-space transformation matrices for each joint.
+
+  This function traverses the joint hierarchy and applies forward kinematics
+  to compute the global/world space transforms of each joint, combining
+  joint rotations and joint translations.
+
+  Args:
+    joints: The bind-pose joints positions. Shape: `(..., J, 3)`.
+    rotations: The joint rotations as axis-angle vectors. Shape: `(..., J, 3)`.
+    translation: The translation vector for the root joint. Shape: `(..., 3)`.
+    joint_parent_indices: A sequence of parent indices for each joint. The root
+      joint must have itself or a sentinel as parent (usually index 0 has parent
+      0).
+
+  Returns:
+    A batch of 4x4 transformation matrices in world space for each joint.
+    Shape: `(..., J, 4, 4)`.
+  """
+  rotation_matrices = axis_angle_to_rotation_matrix(rotations)
+  return joint_transforms_world_from_rotation_matrices(
+      joints=joints,
+      rotation_matrices=rotation_matrices,
+      translation=translation,
+      joint_parent_indices=joint_parent_indices,
+  )
+
+
+def apply_linear_blend_skinning_with_transforms(
+    local_vertices: enpt.FloatArray['... V 3'],
+    joint_positions: enpt.FloatArray['... J 3'],
+    joint_transforms_world_local: enpt.FloatArray['... J 4 4'],
+    skinning_weights: enpt.FloatArray['J V'],
+    xnp: enp.NpModule | None = None,
+) -> enpt.FloatArray['... V 3']:
+  """Applies Linear Blend Skinning using precomputed world joint transforms.
+
+  Args:
+    local_vertices: The vertex positions in local character space, with shape
+      `(..., V, 3)`.
+    joint_positions: The joint positions in bind pose, with shape `(..., J, 3)`.
+    joint_transforms_world_local: The local-to-world 4x4 transformation matrices
+      of each joint after posing, with shape `(..., J, 4, 4)`.
+    skinning_weights: Skinning weights defining joint influence per vertex, with
+      shape `(J, V)`.
+    xnp: Optional array module (e.g. `numpy`, `jax.numpy`, `torch`) to use. If
+      None, it is inferred from `local_vertices`.
+
+  Returns:
+    The posed skinned vertices in world space, with shape `(..., V, 3)`.
+  """
+  if xnp is None:
+    xnp = enp.get_np_module(local_vertices)
+
+  r_world = joint_transforms_world_local[..., :3, :3]
+  t_world = joint_transforms_world_local[..., :3, 3]
+
+  deltas = (r_world @ joint_positions[..., :, None])[..., 0]
+  t_bind_to_world = t_world - deltas
+
+  per_vertex_r = xnp.einsum(
+      'jv,...jmn->...vmn', skinning_weights, r_world, **_einsum_kwargs(xnp)
+  )
+  per_vertex_t = xnp.einsum(
+      'jv,...jm->...vm',
+      skinning_weights,
+      t_bind_to_world,
+      **_einsum_kwargs(xnp),
+  )
+
+  vertices_skinned = (per_vertex_r @ local_vertices[..., :, None])[
+      ..., 0
+  ] + per_vertex_t
+
+  return vertices_skinned
+
+
+def linear_blend_skinning_from_rotation_matrices(
+    local_vertices: enpt.FloatArray['... V 3'],
+    joint_positions: enpt.FloatArray['... J 3'],
+    rotation_matrices: enpt.FloatArray['... J 3 3'],
+    translation: enpt.FloatArray['... 3'],
+    skinning_weights: enpt.FloatArray['J V'],
+    joint_parent_indices: Sequence[int],
+) -> enpt.FloatArray['... V 3']:
+  """Poses GNM vertices using Linear Blend Skinning from rotation matrices.
+
+  Linear Blend Skinning computes posed vertex positions by taking a weighted
+  sum of the transformations applied to each joint, where the weights are
+  defined per vertex and per joint.
+
+  Args:
+    local_vertices: The vertex positions in the local character space, with
+      shape `(..., V, 3)`.
+    joint_positions: The joint positions in bind pose, with shape `(..., J, 3)`.
+    rotation_matrices: Joint rotation matrices, with shape `(..., J, 3, 3)`.
+    translation: Translation vector for the root joint, with shape: `(..., 3)`.
+    skinning_weights: Skinning weights defining joint influence per vertex with
+      shape `(J, V)`.
+    joint_parent_indices: Sequence of parent indices for each joint.
+
+  Returns:
+    The posed skinned vertices with shape `(..., V, 3)`.
+  """
+  xnp = enp.get_np_module(local_vertices)
+
+  # The local-to-world transforms of each joint, after posing, (..., J, 4, 4).
+  joint_transforms_world_local = joint_transforms_world_from_rotation_matrices(
+      joint_positions, rotation_matrices, translation, joint_parent_indices
+  )
+
+  return apply_linear_blend_skinning_with_transforms(
+      local_vertices=local_vertices,
+      joint_positions=joint_positions,
+      joint_transforms_world_local=joint_transforms_world_local,
+      skinning_weights=skinning_weights,
+      xnp=xnp,
+  )
+
+
 def linear_blend_skinning(
     local_vertices: enpt.FloatArray['... V 3'],
     joint_positions: enpt.FloatArray['... J 3'],
@@ -343,38 +463,15 @@ def linear_blend_skinning(
   Returns:
     The posed skinned vertices with shape `(..., V, 3)`.
   """
-  xnp = enp.get_np_module(local_vertices)
-
-  # The local-to-world transforms of each joint, after posing, (..., J, 4, 4).
-  joint_transforms_world_local = joint_transforms_world(
-      joint_positions, rotations, translation, joint_parent_indices
+  rotation_matrices = axis_angle_to_rotation_matrix(rotations)
+  return linear_blend_skinning_from_rotation_matrices(
+      local_vertices=local_vertices,
+      joint_positions=joint_positions,
+      rotation_matrices=rotation_matrices,
+      translation=translation,
+      skinning_weights=skinning_weights,
+      joint_parent_indices=joint_parent_indices,
   )
-
-  # Extract 3x3 rotation and translation from joint transforms.
-  r_world = joint_transforms_world_local[..., :3, :3]
-  t_world = joint_transforms_world_local[..., :3, 3]
-
-  # Compute bind-to-world translation: T_bind = T_world - R_world @ joints
-  deltas = (r_world @ joint_positions[..., :, None])[..., 0]
-  t_bind_to_world = t_world - deltas
-
-  # Compute per-vertex 3x3 rotations and 3D translations via skinning weights.
-  per_vertex_r = xnp.einsum(
-      'jv,...jmn->...vmn', skinning_weights, r_world, **_einsum_kwargs(xnp)
-  )
-  per_vertex_t = xnp.einsum(
-      'jv,...jm->...vm',
-      skinning_weights,
-      t_bind_to_world,
-      **_einsum_kwargs(xnp),
-  )
-
-  # Apply affine transform: V_skinned = R_v @ V_local + T_v
-  vertices_skinned = (per_vertex_r @ local_vertices[..., :, None])[
-      ..., 0
-  ] + per_vertex_t
-
-  return vertices_skinned
 
 
 def vertex_positions_bind_pose(
@@ -401,7 +498,12 @@ def vertex_positions_bind_pose(
     The template vertices with shape and expression offsets applied. Shape:
     `(..., V, 3)`.
   """
-  xnp = enp.get_np_module(template_vertex_positions)
+  reference_array = (
+      identity
+      if identity is not None
+      else (expression if expression is not None else template_vertex_positions)
+  )
+  xnp = enp.get_np_module(reference_array)
 
   # Apply linear identity and expression bases.
   identity_deltas = 0.0
@@ -434,12 +536,76 @@ def joint_positions_bind_pose(
   Returns:
     The template joints with shape offsets applied. Shape: `(..., J, 3)`.
   """
-  xnp = enp.get_np_module(template_joint_positions)
+  reference_array = (
+      identity if identity is not None else template_joint_positions
+  )
+  xnp = enp.get_np_module(reference_array)
   deltas = 0.0
   if identity is not None:
     deltas = _apply_linear_basis(identity, joint_identity_basis, xnp)
 
   return template_joint_positions + deltas
+
+
+def compute_pose_correctives_from_rotation_matrices(
+    rotation_matrices: enpt.FloatArray['... J 3 3'] | None,
+    pose_correctives_regressor: enpt.FloatArray['F F2'] | None,
+    template_vertex_positions: enpt.FloatArray['V 3'],
+    num_joints: int,
+    num_vertices: int,
+) -> enpt.FloatArray['... V 3']:
+  """Applies pose-dependent corrective vertex offsets from rotation matrices.
+
+  Pose correctives modify the mesh vertices based on joint rotation matrices to
+  fix skinning artifacts (e.g. at elbows, knees).
+
+  Args:
+    rotation_matrices: Joint rotation matrices, with shape `(..., J, 3, 3)`.
+    pose_correctives_regressor: The regressor mapping pose features to vertex
+      offsets, with shape `(F, F2)`.
+    template_vertex_positions: The base template vertices, used as reference for
+      device and shape, with shape: `(V, 3)`.
+    num_joints: The total number of joints.
+    num_vertices: The total number of vertices.
+
+  Returns:
+    The corrective vertex offsets. Shape: `(..., V, 3)`.
+  """
+  if pose_correctives_regressor is None or rotation_matrices is None:
+    reference_array = (
+        rotation_matrices
+        if rotation_matrices is not None
+        else template_vertex_positions
+    )
+    return zeros_with_batch_dims(
+        reference_array,
+        3 if rotation_matrices is not None else 2,
+        (num_vertices, 3),
+        dtype=reference_array.dtype,
+    )
+
+  xnp = enp.get_np_module(rotation_matrices)
+  eye_matrix = eye(
+      3,
+      dtype=rotation_matrices.dtype,
+      reference_array=rotation_matrices,
+      xnp=xnp,
+  )
+  pose_features = rotation_matrices - eye_matrix
+
+  pose_features = reshape_with_batch_dims(
+      pose_features, (num_joints * 9,), rotation_matrices, 3
+  )
+
+  pose_deltas = xnp.einsum(
+      '...f,fv->...v',
+      pose_features,
+      pose_correctives_regressor,
+      **_einsum_kwargs(xnp),
+  )
+  return reshape_with_batch_dims(
+      pose_deltas, (num_vertices, 3), rotation_matrices, 3
+  )
 
 
 def compute_pose_correctives(
@@ -466,35 +632,18 @@ def compute_pose_correctives(
   Returns:
     The corrective vertex offsets. Shape: `(..., V, 3)`.
   """
-  xnp = enp.get_np_module(template_vertex_positions)
-
-  if pose_correctives_regressor is None or rotations is None:
-    return zeros_with_batch_dims(
-        rotations if rotations is not None else template_vertex_positions,
-        2,
-        (num_vertices, 3),
-        dtype=template_vertex_positions.dtype,
-    )
-
-  rotation_matrices = axis_angle_to_rotation_matrix(rotations)
-
-  # Construct eye matrices.
-  eye_matrix = eye(3, dtype=rotations.dtype, reference_array=rotations, xnp=xnp)
-  # Broadcast to matching shape.
-  eye_reshaped = xnp.reshape(eye_matrix, (1,) * (rotations.ndim - 1) + (3, 3))
-  pose_features = rotation_matrices - eye_reshaped
-
-  pose_features = reshape_with_batch_dims(
-      pose_features, (num_joints * 9,), rotations, 2
+  rotation_matrices = (
+      axis_angle_to_rotation_matrix(rotations)
+      if rotations is not None
+      else None
   )
-
-  pose_deltas = xnp.einsum(
-      '...f,fv->...v',
-      pose_features,
-      pose_correctives_regressor,
-      **_einsum_kwargs(xnp),
+  return compute_pose_correctives_from_rotation_matrices(
+      rotation_matrices=rotation_matrices,
+      pose_correctives_regressor=pose_correctives_regressor,
+      template_vertex_positions=template_vertex_positions,
+      num_joints=num_joints,
+      num_vertices=num_vertices,
   )
-  return reshape_with_batch_dims(pose_deltas, (num_vertices, 3), rotations, 2)
 
 
 def _graph_shape(
@@ -543,7 +692,12 @@ def _apply_linear_basis(
   batch_dims = params.shape[:-1]
 
   has_batch = batch_dims and (0 not in params.shape)
-  if has_batch and enp.lazy.is_np_xnp(xnp) and _is_constant_batch(params, xnp):
+  if (
+      has_batch
+      and enp.lazy.is_np(params)
+      and enp.lazy.is_np_xnp(xnp)
+      and _is_constant_batch(params, xnp)
+  ):
     single_param = params.reshape(-1, params.shape[-1])[0]
     deltas = xnp.einsum('i,ijk->jk', single_param, basis, **_einsum_kwargs(xnp))
     return xnp.broadcast_to(deltas, (*batch_dims, *deltas.shape))
