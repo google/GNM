@@ -112,6 +112,17 @@ class GNMCustomFileLoadingTest(parameterized.TestCase):
 
     self.assertNotIn('extra_field', data)
 
+  def test_load_model_from_custom_file_rereads_changed_file(self):
+    """A model file that changed on disk is read again, not served stale."""
+    local_path = self._write_model(joint_names=['joint1'])
+    data1 = gnm_data_loader.load_model_from_custom_file(local_path)
+
+    self._write_model(joint_names=['new_joint'])
+    data2 = gnm_data_loader.load_model_from_custom_file(local_path)
+
+    self.assertEqual(data1['joint_names'], ['joint1'])
+    self.assertEqual(data2['joint_names'], ['new_joint'])
+
   def test_load_model_from_custom_file_fails_when_file_not_found(self):
     with self.assertRaisesRegex(ValueError, 'not found'):
       gnm_data_loader.load_model_from_custom_file(

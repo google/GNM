@@ -42,7 +42,10 @@ class BaseGNMUtilsTest(parameterized.TestCase):
   """Base class loading the GNMs on demand.
 
   Attributes:
-    gnms: The GNMs, by version and variant.
+    gnms: The GNMs, by version and variant. Loaded models are shared by the
+      tests of a class, so tests must not modify them (neither in place nor by
+      reassigning attributes). Copy a model with `copy.deepcopy(...)` before
+      changing it.
     max_loaded: The maximum number of models kept in memory at once, e.g. 2 for
       tests using two models at once. If None, all the models of a version are
       kept in memory.
