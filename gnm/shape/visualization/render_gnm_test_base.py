@@ -15,6 +15,7 @@
 """Shared base test classes and helpers for GNM mesh rendering backends."""
 
 from collections.abc import Callable
+import functools
 
 import tempfile
 from typing import Any
@@ -24,6 +25,7 @@ from absl.testing import parameterized
 import cv2
 from etils import epath
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import render_common
 from gnm.shape.visualization import vertex_colors as vertex_colors_module
@@ -32,6 +34,23 @@ import numpy as np
 
 _OUTPUTS_TMPDIR = tempfile.TemporaryDirectory()
 _OUTPUTS_DIR = epath.Path(_OUTPUTS_TMPDIR.name)
+
+
+@functools.cache
+def load_head_gnm(version: str) -> gnm_numpy.GNM:
+  """Loads the GNM head model of `version` once, shared by all tests.
+
+  Tests must not modify the returned model.
+
+  Args:
+    version: The GNM major version, e.g. 'v3'.
+
+  Returns:
+    The GNM head model.
+  """
+  return gnm_test_utils.load_gnm(
+      gnm_numpy.GNM, version, gnm_numpy.GNMVariant.HEAD
+  )
 
 
 def write_gif(
@@ -102,12 +121,10 @@ class RenderGNMTestBase(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = {
+        version: load_head_gnm(version)
+        for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
+    }
 
   def setUp(self):
     super().setUp()
@@ -549,12 +566,7 @@ class RenderGNMBatchTestBase(parameterized.TestCase):
     )
     self.mock_render.side_effect = mock_render
 
-    self.gnm_np = gnm_numpy.GNM.from_remote(
-        gnm_numpy.GNMMajorVersion(
-            gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0].removeprefix('v')
-        ),
-        gnm_numpy.GNMVariant.HEAD,
-    )
+    self.gnm_np = load_head_gnm(gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0])
     self.image_size = (240, 320)
     self.image_dims = (self.image_size[1], self.image_size[0], 3)
     self.vertices_shape = self.gnm_np.template_vertex_positions.shape

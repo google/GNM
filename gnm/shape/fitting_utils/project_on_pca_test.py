@@ -19,6 +19,7 @@ import math
 from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape import gnm_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.fitting_utils import project_on_pca
@@ -37,16 +38,20 @@ class ProjectOnPcaTest(parameterized.TestCase):
     super().setUpClass()
     cls.rng = np.random.default_rng(0)
 
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      if (
-          gnm_numpy.GNMVariant.HEAD
-          in gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP[version]
-      ):
-        cls.gnms[version] = gnm_numpy.GNM.from_remote(
-            gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-            gnm_numpy.GNMVariant.HEAD,
+    cls.gnms = {
+        version: gnm_test_utils.load_gnm(
+            gnm_numpy.GNM, version, gnm_numpy.GNMVariant.HEAD
         )
+        for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
+        if gnm_numpy.GNMVariant.HEAD
+        in gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP[version]
+    }
+
+  def _get_gnm(self, version: str) -> gnm_numpy.GNM:
+    """Returns the head model of `version`, or skips if it is unavailable."""
+    if version not in self.gnms:
+      self.skipTest(f'Head variant not available in version {version}')
+    return self.gnms[version]
 
   @parameterized.product(
       version=gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS,
@@ -55,7 +60,7 @@ class ProjectOnPcaTest(parameterized.TestCase):
   )
   def test_can_recover_identity(self, version: str, index: int, value: float):
     """Tests that the estimated identity is close to the ground truth."""
-    gnm_np = self.gnms[version]
+    gnm_np = self._get_gnm(version)
     identity = np.zeros(gnm_np.identity_dim)
     expression = np.zeros(gnm_np.expression_dim)
     identity[index] = value
@@ -78,7 +83,7 @@ class ProjectOnPcaTest(parameterized.TestCase):
   )
   def test_can_recover_expression(self, version: str, index: int, value: float):
     """Tests that the estimated expression is close to the ground truth."""
-    gnm_np = self.gnms[version]
+    gnm_np = self._get_gnm(version)
     identity = np.zeros(gnm_np.identity_dim)
     expression = np.zeros(gnm_np.expression_dim)
     expression[index] = value
@@ -102,16 +107,9 @@ class ProjectOnPcaTest(parameterized.TestCase):
       self, version, num_components_and_threshold
   ):
     """Tests that we can estimate identity using a subset of the basis."""
-    if (
-        gnm_numpy.GNMVariant.HEAD
-        not in gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP[version]
-    ):
-      self.skipTest(f'Head variant not available in version {version}')
+    gnm = self._get_gnm(version)
 
     num_components, threshold = num_components_and_threshold
-
-    major_version = gnm_numpy.GNMMajorVersion(version.removeprefix('v'))
-    gnm = gnm_numpy.GNM.from_remote(major_version, gnm_numpy.GNMVariant.HEAD)
 
     identity = self.rng.uniform(low=-1.5, high=1.5, size=gnm.identity_dim)
     expression = np.zeros(gnm.expression_dim)
@@ -149,16 +147,9 @@ class ProjectOnPcaTest(parameterized.TestCase):
       self, version, batch_size_num_components_threshold
   ):
     """Tests that the projection object can estimate identity ."""
-    if (
-        gnm_numpy.GNMVariant.HEAD
-        not in gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP[version]
-    ):
-      self.skipTest(f'Head variant not available in version {version}')
+    gnm = self._get_gnm(version)
 
     batch_size, num_components, threshold = batch_size_num_components_threshold
-
-    major_version = gnm_numpy.GNMMajorVersion(version.removeprefix('v'))
-    gnm = gnm_numpy.GNM.from_remote(major_version, gnm_numpy.GNMVariant.HEAD)
 
     identity = self.rng.uniform(
         low=-1.5, high=1.5, size=(batch_size, gnm.identity_dim)
@@ -204,15 +195,9 @@ class ProjectOnPcaTest(parameterized.TestCase):
       self, version, batch_size_num_components_threshold
   ):
     """Tests that the projection object can estimate expression."""
-    if (
-        gnm_numpy.GNMVariant.HEAD
-        not in gnm_test_catalog.MAJOR_VERSION_TO_VARIANTS_MAP[version]
-    ):
-      self.skipTest(f'Head variant not available in version {version}')
+    gnm = self._get_gnm(version)
 
     batch_size, num_components, threshold = batch_size_num_components_threshold
-    major_version = gnm_numpy.GNMMajorVersion(version.removeprefix('v'))
-    gnm = gnm_numpy.GNM.from_remote(major_version, gnm_numpy.GNMVariant.HEAD)
 
     expected_regions = [
         'left_eye_region',

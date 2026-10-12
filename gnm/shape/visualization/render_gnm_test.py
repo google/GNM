@@ -53,12 +53,10 @@ class TestProjectPointsForGNM(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = {
+        version: render_gnm_test_base.load_head_gnm(version)
+        for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
+    }
 
   def setUp(self):
     super().setUp()

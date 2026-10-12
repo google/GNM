@@ -14,16 +14,30 @@
 
 """Tests for backend-agnostic helpers in render_common."""
 
+import functools
 from typing import Any
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import camera_conversions
 from gnm.shape.visualization import render_common
 import numpy as np
 
 _TupleOfInts = tuple[int, ...]
+
+
+@functools.cache
+def _load_head_gnms() -> dict[str, gnm_numpy.GNM]:
+  """Loads the GNM head models once, shared by all test classes."""
+  return {
+      version: gnm_test_utils.load_gnm(
+          gnm_numpy.GNM, version, gnm_numpy.GNMVariant.HEAD
+      )
+      for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS
+  }
 
 
 def _get_random_parameters(
@@ -94,12 +108,7 @@ class TestGetLookAtWorldToCamera(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = _load_head_gnms()
 
   @parameterized.named_parameters(*[
       (version, version)
@@ -206,12 +215,7 @@ class TestGetFillFactorCameraToImage(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = _load_head_gnms()
 
   @parameterized.named_parameters(*[
       (version, version)
@@ -248,12 +252,7 @@ class TestLoadTexture(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = _load_head_gnms()
 
   @parameterized.named_parameters(*[
       (version, version)
@@ -287,12 +286,7 @@ class TestProjectPointsForGnm(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = _load_head_gnms()
 
   @parameterized.named_parameters(*[
       (version, version)
@@ -324,12 +318,7 @@ class TestGetSpinWorldToCamera(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnms = {}
-    for version in gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS:
-      cls.gnms[version] = gnm_numpy.GNM.from_remote(
-          gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
-          gnm_numpy.GNMVariant.HEAD,
-      )
+    cls.gnms = _load_head_gnms()
 
   @parameterized.named_parameters(*[
       (version, version)
@@ -363,12 +352,9 @@ class TestRenderGNMMesh(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.gnm_np = gnm_numpy.GNM.from_remote(
-        gnm_numpy.GNMMajorVersion(
-            gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0].removeprefix('v')
-        ),
-        gnm_numpy.GNMVariant.HEAD,
-    )
+    cls.gnm_np = _load_head_gnms()[
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+    ]
 
   def test_render_gnm_mesh_mock(self):
     """Tests render_gnm_mesh prepares parameters and calls backend_render_fn."""
