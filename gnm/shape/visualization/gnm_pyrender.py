@@ -19,11 +19,15 @@ arguments; call `render_gnm.render_gnm` rather than `render` directly.
 """
 
 import collections.abc
+import dataclasses
 import functools
 import os
 import tempfile
 from typing import Any
 import cv2
+from gnm.shape.visualization import camera_conversions
+from gnm.shape.visualization import render_common
+import jaxtyping as jt
 import numpy as np
 import tqdm
 
@@ -95,9 +99,9 @@ def render(
     alpha: float = 1.0,
     include_shading: bool = True,
     verbose: bool = False,
-    renderer_factory: (
-        collections.abc.Callable[[int, int], pyrender.OffscreenRenderer]
-    ) = DEFAULT_RENDERER_FACTORY,
+    renderer_factory: collections.abc.Callable[
+        [int, int], pyrender.OffscreenRenderer
+    ] = DEFAULT_RENDERER_FACTORY,
 ) -> np.ndarray:
   """Render GNM meshes.
 
@@ -268,6 +272,297 @@ def render(
 
   renderer.delete()
   return np.array(colors)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Stateful PyRender 3D mesh renderer for `gnm_numpy.GNM` models.
+
+  Supports both OSMesa (`DEFAULT_RENDERER_FACTORY`) and SwiftShader
+  (`gnm_pyrender_swiftshader.create_swiftshader_renderer`) backends.
+
+  Attributes:
+    renderer_factory: Factory callable `(viewport_width, viewport_height) ->
+      pyrender.OffscreenRenderer`.
+  """
+
+  renderer_factory: collections.abc.Callable[
+      [int, int], pyrender.OffscreenRenderer
+  ] = DEFAULT_RENDERER_FACTORY
+
+  _scene: pyrender.Scene | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _mesh_node: pyrender.Node | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _camera: ProjectionMatrixCamera | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _camera_node: pyrender.Node | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _renderer: pyrender.OffscreenRenderer | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _textures: dict[str, pyrender.Texture] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _cached_vertices: jt.Float[np.ndarray, 'V 3'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_normals: jt.Float[np.ndarray, 'V 3'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_world_to_camera: jt.Float[np.ndarray, '4 4'] | None = (
+      dataclasses.field(default=None, init=False, repr=False, compare=False)
+  )
+  _cached_camera_to_image: (
+      jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3'] | None
+  ) = dataclasses.field(default=None, init=False, repr=False, compare=False)
+  _cached_image_size: tuple[int, int] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+
+  def update_vertices(
+      self,
+      vertices: jt.Float[jt.ArrayLike, 'V 3'],
+      vertex_normals: jt.Float[jt.ArrayLike, 'V 3'] | None = None,
+      *,
+      max_tex_dim: int = 1024,
+  ) -> None:
+    """Updates the PyRender mesh node with new vertices and normals."""
+    del max_tex_dim
+    vertices_f32 = np.asarray(vertices, dtype=np.float32)
+    if vertex_normals is None:
+      normals_f32 = np.asarray(
+          self.gnm_np.compute_vertex_normals(vertices_f32[np.newaxis, ...])[0],
+          dtype=np.float32,
+      )
+    else:
+      normals_f32 = np.asarray(vertex_normals, dtype=np.float32)
+
+    object.__setattr__(self, '_cached_vertices', vertices_f32)
+    object.__setattr__(self, '_cached_normals', normals_f32)
+
+    self._ensure_scene_initialized()
+    self._rebuild_mesh_node(vertices_f32, normals_f32)
+
+  def update_camera(
+      self,
+      world_to_camera: jt.Float[np.ndarray, '4 4'],
+      camera_to_image: (
+          jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3']
+      ),
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates the PyRender camera pose, projection matrix, and offscreen renderer."""
+    world_to_camera_f32 = np.asarray(world_to_camera, dtype=np.float32)
+    camera_to_image_f32 = np.asarray(camera_to_image, dtype=np.float32)
+
+    if (
+        self._renderer is not None
+        and self._camera is not None
+        and self._camera_node is not None
+        and self._cached_image_size == image_size
+        and self._cached_world_to_camera is not None
+        and self._cached_camera_to_image is not None
+        and np.array_equal(self._cached_world_to_camera, world_to_camera_f32)
+        and np.array_equal(self._cached_camera_to_image, camera_to_image_f32)
+    ):
+      return
+
+    self._ensure_scene_initialized()
+    width, height = image_size
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+
+    opengl_world_to_camera = camera_conversions.opencv_extrinsics_to_opengl(
+        world_to_camera_f32
+    )
+    opengl_camera_to_image = (
+        camera_conversions.opencv_intrinsics_matrix_to_opengl_view_matrix(
+            camera_to_image_f32,
+            width=width,
+            height=height,
+            near=render_common.DEFAULT_NEAR,
+            far=render_common.DEFAULT_FAR,
+        )
+    )
+    camera_to_world = np.linalg.inv(opengl_world_to_camera)
+
+    if (
+        self._camera is not None
+        and self._camera_node is not None
+        and self._scene is not None
+    ):
+      self._camera.set_projection_matrix(opengl_camera_to_image)
+      self._scene.set_pose(self._camera_node, camera_to_world)
+
+    if self._renderer is None or self._cached_image_size != image_size:
+      if self._renderer is not None:
+        self._renderer.delete()
+      renderer = self.renderer_factory(render_width, render_height)
+      _override_shader_cache(renderer)
+      object.__setattr__(self, '_renderer', renderer)
+
+    object.__setattr__(
+        self, '_cached_world_to_camera', world_to_camera_f32.copy()
+    )
+    object.__setattr__(
+        self, '_cached_camera_to_image', camera_to_image_f32.copy()
+    )
+    object.__setattr__(self, '_cached_image_size', image_size)
+
+  def close(self) -> None:
+    """Deletes the offscreen renderer and clears cached PyRender state."""
+    if self._renderer is not None:
+      self._renderer.delete()
+      object.__setattr__(self, '_renderer', None)
+    object.__setattr__(self, '_scene', None)
+    object.__setattr__(self, '_mesh_node', None)
+    object.__setattr__(self, '_camera', None)
+    object.__setattr__(self, '_camera_node', None)
+    self._textures.clear()
+
+  def _on_triangles_updated(self) -> None:
+    """Rebuilds the PyRender mesh node after `_triangle_dict` changes."""
+    if (
+        self._scene is not None
+        and self._cached_vertices is not None
+        and self._cached_normals is not None
+    ):
+      self._rebuild_mesh_node(self._cached_vertices, self._cached_normals)
+
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[jt.Float[np.ndarray, 'H W 3'], jt.Float[np.ndarray, 'H W 1']]:
+    """Renders the current PyRender scene for one frame.
+
+    Args:
+      width: Target output width in pixels.
+      height: Target output height in pixels.
+
+    Returns:
+      A tuple of `(frame_rgb, frame_alpha)` as float32 arrays of shapes
+      `(height, width, 3)` and `(height, width, 1)`.
+
+    Raises:
+      RuntimeError: If the PyRender scene, mesh node, or offscreen renderer is
+        not initialized.
+    """
+    if self._scene is None or self._renderer is None or self._mesh_node is None:
+      raise RuntimeError(
+          'PyRender scene, mesh node, and offscreen renderer must be'
+          ' initialized before rendering.'
+      )
+    color_srgb, depth = self._renderer.render(
+        self._scene, flags=pyrender.constants.RenderFlags.NONE
+    )
+    foreground_rgb = np.clip(color_srgb.astype(np.float32) / 255.0, 0.0, 1.0)
+    foreground_rgb = np.power(foreground_rgb, 2.2)
+    subpixel_alpha = (depth > 0.0).astype(np.float32)[..., np.newaxis]
+    premultiplied_rgb = foreground_rgb * subpixel_alpha
+
+    if self.multisample_antialiasing > 1:
+      premultiplied_rgb = cv2.resize(
+          premultiplied_rgb, (width, height), interpolation=cv2.INTER_AREA
+      )
+      msaa_alpha = cv2.resize(
+          subpixel_alpha, (width, height), interpolation=cv2.INTER_AREA
+      )
+      if msaa_alpha.ndim == 2:
+        msaa_alpha = msaa_alpha[..., np.newaxis]
+    else:
+      msaa_alpha = subpixel_alpha
+
+    safe_alpha = np.maximum(msaa_alpha, 1e-6)
+    clipped_rgb = np.clip(premultiplied_rgb / safe_alpha, 0.0, 1.0)
+    unpremultiplied_rgb = np.where(
+        msaa_alpha > 0.0,
+        clipped_rgb,
+        np.zeros_like(clipped_rgb),
+    )
+    return (
+        np.asarray(unpremultiplied_rgb, dtype=np.float32),
+        np.asarray(msaa_alpha, dtype=np.float32),
+    )
+
+  def _progress_bar_desc(self) -> str:
+    return 'Rendering (PyRender)'
+
+  def _ensure_scene_initialized(self) -> None:
+    """Initializes the PyRender scene, camera node, and directional light if needed."""
+    if self._scene is not None:
+      return
+    scene = pyrender.Scene(bg_color=_BLACK)
+    camera = ProjectionMatrixCamera(np.eye(4, dtype=np.float32))
+    camera_node = scene.add(camera, pose=np.eye(4, dtype=np.float32))
+    light_direction_camera = _LIGHT_DIRECTION / np.linalg.norm(_LIGHT_DIRECTION)
+    light_pose_camera = _align_vectors(
+        np.array([0.0, 0.0, 1.0]), light_direction_camera
+    )
+    light = pyrender.DirectionalLight(
+        color=np.ones(3), intensity=_LIGHT_INTENSITY
+    )
+    scene.add(light, pose=light_pose_camera, parent_node=camera_node)
+    object.__setattr__(self, '_scene', scene)
+    object.__setattr__(self, '_camera', camera)
+    object.__setattr__(self, '_camera_node', camera_node)
+
+  def _get_part_texture(self, part_name: str) -> pyrender.Texture:
+    """Returns a cached `pyrender.Texture` for `part_name`."""
+    cached_tex = self._textures.get(part_name)
+    if cached_tex is not None:
+      return cached_tex
+
+    raw_tex = self._raw_textures.get(part_name)
+    if raw_tex is None:
+      tex_frame = np.full((1, 1, 3), 255, dtype=np.uint8)
+    else:
+      tex_frame = (
+          raw_tex
+          if raw_tex.ndim == 3
+          else raw_tex.reshape(-1, *raw_tex.shape[-3:])[0]
+      )
+    pyrender_tex = pyrender.Texture(source=tex_frame, source_channels='RGB')
+    self._textures[part_name] = pyrender_tex
+    return pyrender_tex
+
+  def _rebuild_mesh_node(
+      self,
+      vertices: jt.Float[np.ndarray, 'V 3'],
+      vertex_normals: jt.Float[np.ndarray, 'V 3'],
+  ) -> None:
+    """Rebuilds the PyRender mesh node from `vertices`, `vertex_normals`, and `_triangle_dict`."""
+    if self._scene is None:
+      return
+    primitives: list[pyrender.Primitive] = []
+    for part_name, faces in self._triangle_dict.items():
+      if len(faces) == 0:
+        continue
+      material = pyrender.MetallicRoughnessMaterial(
+          metallicFactor=0.0,
+          roughnessFactor=1.0,
+          baseColorTexture=self._get_part_texture(part_name),
+      )
+      primitives.append(
+          pyrender.Primitive(
+              positions=vertices,
+              indices=faces,
+              normals=vertex_normals,
+              texcoord_0=self._vertex_uvs,
+              color_0=self._vertex_colors,
+              material=material,
+          )
+      )
+    mesh = pyrender.Mesh(primitives=primitives)
+    if self._mesh_node is not None:
+      self._scene.remove_node(self._mesh_node)
+    mesh_node = self._scene.add(mesh)
+    object.__setattr__(self, '_mesh_node', mesh_node)
 
 
 @functools.cache

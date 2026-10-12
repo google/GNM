@@ -33,5 +33,25 @@ class RenderGNMBatchTest(render_gnm_test_base.RenderGNMBatchTestBase):
   mock_target = 'gnm.shape.visualization.gnm_mitsuba.render'
 
 
+class RenderGNMMitsubaRendererTest(render_gnm_test_base.RenderGNMTestBase):
+  """Tests for stateful GNMMeshRenderer exposed via render_gnm_mitsuba."""
+
+  render_fn = staticmethod(render_gnm_mitsuba.render_gnm)
+  test_all_versions = False
+
+  def test_renderer_class_exposed_and_renders(self):
+    """Tests that GNMMeshRenderer and MeshRenderOutput render template mesh."""
+    self.assertIs(
+        render_gnm_mitsuba.GNMMeshRenderer,
+        render_gnm_mitsuba.gnm_mitsuba.GNMMeshRenderer,
+    )
+    renderer = render_gnm_mitsuba.GNMMeshRenderer(gnm_np=self.gnm_np, spp=1)
+    render_output = renderer.render(image_size=(32, 32))
+    self.assertIsInstance(render_output, render_gnm_mitsuba.MeshRenderOutput)
+    self.assertEqual(render_output.image.shape, (32, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (32, 32, 1))
+    renderer.close()
+
+
 if __name__ == '__main__':
   absltest.main()

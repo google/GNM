@@ -22,11 +22,14 @@ directly.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import dataclasses
 from typing import Any
 
 import cv2
 import drjit as dr
 from gnm.shape.visualization import integrators
+from gnm.shape.visualization import render_common
+import jaxtyping as jt
 import mitsuba as mi
 import numpy as np
 import numpy.typing as npt
@@ -194,9 +197,7 @@ def create_mitsuba_mesh(
 
   mi_mesh = mi.Mesh(properties)
   mi_mesh.from_fields(
-      faces=mi.TensorXu32(
-          faces.astype(np.uint32)
-      ),
+      faces=mi.TensorXu32(faces.astype(np.uint32)),
       positions=mi.TensorXf32(vertices.astype(np.float32)),
       normals=normals,
       texcoords=texcoords,
@@ -502,3 +503,388 @@ def render(
 
   dr.flush_malloc_cache()
   return np.array(composited_frames, dtype=np.float32)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Stateful Mitsuba 3D mesh renderer for `gnm_numpy.GNM` models.
+
+  Attributes:
+    spp: Raytracing samples per pixel. Defaults to 4.
+  """
+
+  spp: int = 4
+
+  _cached_bitmaps: dict[tuple[str, int], mi.Bitmap] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _scene: mi.Scene | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _scene_params: mi.SceneParameters | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _mesh_keys: tuple[str, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _active_part_names: tuple[str, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _cached_normals: jt.Float[np.ndarray, 'V 3'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _sensor: mi.Sensor | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_world_to_camera: jt.Float[np.ndarray, '4 4'] | None = (
+      dataclasses.field(default=None, init=False, repr=False, compare=False)
+  )
+  _cached_camera_to_image: (
+      jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3'] | None
+  ) = dataclasses.field(default=None, init=False, repr=False, compare=False)
+  _cached_image_size: tuple[int, int] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_light_dir: jt.Float[np.ndarray, '3'] = dataclasses.field(
+      default_factory=lambda: np.array([0.0, 0.0, 1.0], dtype=np.float32),
+      init=False,
+      repr=False,
+      compare=False,
+  )
+
+  def update_vertices(
+      self,
+      vertices: jt.Float[jt.ArrayLike, 'V 3'],
+      vertex_normals: jt.Float[jt.ArrayLike, 'V 3'] | None = None,
+      *,
+      max_tex_dim: int = 1024,
+  ) -> None:
+    """Updates the Mitsuba scene mesh vertices and normals in-place."""
+    _ensure_mitsuba_initialized()
+    vertices_f32 = np.asarray(vertices, dtype=np.float32)
+    if vertex_normals is None:
+      normals_f32 = np.asarray(
+          self.gnm_np.compute_vertex_normals(vertices_f32[np.newaxis, ...])[0],
+          dtype=np.float32,
+      )
+    else:
+      normals_f32 = np.asarray(vertex_normals, dtype=np.float32)
+
+    object.__setattr__(self, '_cached_normals', normals_f32)
+
+    if self._scene is None or self._scene_params is None:
+      self._initialize_scene(vertices_f32, normals_f32, max_tex_dim=max_tex_dim)
+      return
+
+    if MITSUBA_USE_LEGACY_MESH_API:
+      flat_positions = np.ravel(vertices_f32)
+      flat_normals = np.ravel(normals_f32)
+      for mesh_key in self._mesh_keys:
+        self._scene_params[f'{mesh_key}.vertex_positions'] = flat_positions
+        self._scene_params[f'{mesh_key}.vertex_normals'] = flat_normals
+    else:
+      positions_tensor = mi.TensorXf32(vertices_f32)
+      normals_tensor = mi.TensorXf32(normals_f32)
+      for mesh_key in self._mesh_keys:
+        self._scene_params[f'{mesh_key}.positions'] = positions_tensor
+        self._scene_params[f'{mesh_key}.normals'] = normals_tensor
+    self._scene_params.update()
+
+  def update_camera(
+      self,
+      world_to_camera: jt.Float[np.ndarray, '4 4'],
+      camera_to_image: (
+          jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3']
+      ),
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates the Mitsuba sensor and integrator light direction if changed."""
+    _ensure_mitsuba_initialized()
+    world_to_camera_f32 = np.asarray(world_to_camera, dtype=np.float32)
+    camera_to_image_f32 = np.asarray(camera_to_image, dtype=np.float32)
+
+    if (
+        self._sensor is not None
+        and self._cached_image_size == image_size
+        and self._cached_world_to_camera is not None
+        and self._cached_camera_to_image is not None
+        and np.array_equal(self._cached_world_to_camera, world_to_camera_f32)
+        and np.array_equal(self._cached_camera_to_image, camera_to_image_f32)
+    ):
+      return
+
+    width, height = image_size
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+
+    to_world_mitsuba, fov_x, offset_x, offset_y = (
+        _compute_camera_to_world_and_fov(
+            world_to_camera_f32,
+            camera_to_image_f32,
+            width=width,
+            height=height,
+        )
+    )
+    light_dir = _compute_world_light_direction(world_to_camera_f32)
+
+    sensor_dict = {
+        'type': 'perspective',
+        'fov': fov_x,
+        'principal_point_offset_x': offset_x,
+        'principal_point_offset_y': offset_y,
+        'to_world': mi.ScalarTransform4f(to_world_mitsuba),
+        'film': {
+            'type': 'hdrfilm',
+            'width': render_width,
+            'height': render_height,
+            'pixel_format': 'rgba',
+            'rfilter': {'type': 'box'},
+        },
+        'sampler': {
+            'type': 'independent',
+            'sample_count': self.spp,
+        },
+    }
+    sensor = mi.load_dict(sensor_dict)
+    object.__setattr__(self, '_sensor', sensor)
+    object.__setattr__(
+        self, '_cached_world_to_camera', world_to_camera_f32.copy()
+    )
+    object.__setattr__(
+        self, '_cached_camera_to_image', camera_to_image_f32.copy()
+    )
+    object.__setattr__(self, '_cached_image_size', image_size)
+    object.__setattr__(self, '_cached_light_dir', light_dir)
+
+    if self._scene is not None:
+      integrator = self._scene.integrator()
+      if integrator is not None:
+        setattr(
+            integrator,
+            'light_dir',
+            mi.ScalarVector3f(
+                float(light_dir[0]), float(light_dir[1]), float(light_dir[2])
+            ),
+        )
+
+  def close(self) -> None:
+    """Releases cached Mitsuba scene, sensor, and Dr.Jit allocations."""
+    object.__setattr__(self, '_scene', None)
+    object.__setattr__(self, '_scene_params', None)
+    object.__setattr__(self, '_sensor', None)
+    object.__setattr__(self, '_mesh_keys', ())
+    object.__setattr__(self, '_active_part_names', ())
+    dr.flush_malloc_cache()
+
+  def _on_triangles_updated(self) -> None:
+    """Syncs or invalidates the Mitsuba scene after `_triangle_dict` changes."""
+    _ensure_mitsuba_initialized()
+    if self._scene is None or self._scene_params is None:
+      return
+
+    new_active_parts = tuple(
+        part_name
+        for part_name, faces in self._triangle_dict.items()
+        if len(faces) > 0
+    )
+    if (
+        not MITSUBA_USE_LEGACY_MESH_API
+        and new_active_parts == self._active_part_names
+    ):
+      for mesh_key, part_name in zip(
+          self._mesh_keys, self._active_part_names, strict=True
+      ):
+        part_faces = self._triangle_dict[part_name]
+        self._scene_params[f'{mesh_key}.faces'] = mi.TensorXu32(
+            part_faces.astype(np.uint32)
+        )
+        if self._cached_normals is not None:
+          self._scene_params[f'{mesh_key}.normals'] = mi.TensorXf32(
+              self._cached_normals
+          )
+      self._scene_params.update()
+    else:
+      object.__setattr__(self, '_scene', None)
+      object.__setattr__(self, '_scene_params', None)
+      object.__setattr__(self, '_mesh_keys', ())
+      object.__setattr__(self, '_active_part_names', ())
+
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[jt.Float[np.ndarray, 'H W 3'], jt.Float[np.ndarray, 'H W 1']]:
+    """Renders the current Mitsuba scene and sensor for one frame.
+
+    Args:
+      width: Target output width in pixels.
+      height: Target output height in pixels.
+
+    Returns:
+      A tuple of `(frame_rgb, frame_alpha)` as float32 arrays of shapes
+      `(height, width, 3)` and `(height, width, 1)`.
+
+    Raises:
+      RuntimeError: If the Mitsuba scene or sensor is not initialized.
+    """
+    if self._scene is None or self._sensor is None:
+      raise RuntimeError(
+          'Mitsuba scene and sensor must be initialized before rendering.'
+      )
+    image_film = mi.render(self._scene, sensor=self._sensor, spp=self.spp)
+
+    foreground_rgb = dr.clip(image_film[..., :3], 0.0, 1.0)
+    raw_alpha = image_film[..., 3:4]
+    subpixel_alpha = dr.select(
+        raw_alpha > 0.0, dr.ones_like(raw_alpha), dr.zeros_like(raw_alpha)
+    )
+    premultiplied_rgb = foreground_rgb * subpixel_alpha
+
+    if self.multisample_antialiasing > 1:
+      premultiplied_rgb = dr.resample(
+          premultiplied_rgb, shape=(height, width, 3), filter='box'
+      )
+      msaa_alpha = dr.resample(
+          subpixel_alpha, shape=(height, width, 1), filter='box'
+      )
+    else:
+      msaa_alpha = subpixel_alpha
+
+    safe_alpha = dr.maximum(msaa_alpha, 1e-6)
+    clipped_rgb = dr.clip(premultiplied_rgb / safe_alpha, 0.0, 1.0)
+    unpremultiplied_rgb = dr.select(
+        msaa_alpha > 0.0,
+        clipped_rgb,
+        dr.zeros_like(clipped_rgb),
+    )
+    frame_rgb = np.asarray(unpremultiplied_rgb, dtype=np.float32)
+    frame_alpha = np.asarray(msaa_alpha, dtype=np.float32)
+    del image_film
+    return frame_rgb, frame_alpha
+
+  def _after_batch_render(self) -> None:
+    dr.flush_malloc_cache()
+
+  def _progress_bar_desc(self) -> str:
+    return 'Rendering (Mitsuba)'
+
+  def _get_part_bitmap(self, part_name: str, max_tex_dim: int) -> mi.Bitmap:
+    """Returns a cached `mi.Bitmap` for `part_name` at `max_tex_dim`."""
+    cache_key = (part_name, max_tex_dim)
+    cached_bitmap = self._cached_bitmaps.get(cache_key)
+    if cached_bitmap is not None:
+      return cached_bitmap
+
+    raw_tex = self._raw_textures.get(part_name)
+    if raw_tex is None:
+      tex_frame = np.ones((1, 1, 3), dtype=np.float32)
+      is_uint8 = False
+    else:
+      tex_frame = (
+          raw_tex
+          if raw_tex.ndim == 3
+          else raw_tex.reshape(-1, *raw_tex.shape[-3:])[0]
+      )
+      is_uint8 = raw_tex.dtype == np.uint8
+
+    bitmap = _prepare_texture_bitmap(
+        tex_frame=tex_frame,
+        is_uint8=is_uint8,
+        max_tex_dim=max_tex_dim,
+    )
+    self._cached_bitmaps[cache_key] = bitmap
+    return bitmap
+
+  def _initialize_scene(
+      self,
+      vertices: jt.Float[np.ndarray, 'V 3'],
+      vertex_normals: jt.Float[np.ndarray, 'V 3'],
+      *,
+      max_tex_dim: int,
+  ) -> None:
+    """Constructs the initial `mi.Scene` and caches `mi.traverse(scene)`."""
+    light_dir = self._cached_light_dir
+    scene_dict: dict[
+        str, str | dict[str, str | mi.ScalarVector3f] | mi.Mesh
+    ] = {
+        'type': 'scene',
+        'integrator': {
+            'type': 'gnm_half_lambert',
+            'light_dir': mi.ScalarVector3f(
+                float(light_dir[0]), float(light_dir[1]), float(light_dir[2])
+            ),
+        },
+    }
+
+    mesh_keys: list[str] = []
+    active_part_names: list[str] = []
+    mesh_counter = 0
+    for part_name, faces in self._triangle_dict.items():
+      if len(faces) == 0:
+        continue
+
+      props = mi.Properties()
+      props['bsdf'] = mi.load_dict({
+          'type': 'diffuse',
+          'reflectance': {
+              'type': 'bitmap',
+              'bitmap': self._get_part_bitmap(part_name, max_tex_dim),
+              'raw': True,
+              'filter_type': 'bilinear',
+          },
+      })
+
+      mesh_part = create_mitsuba_mesh(
+          vertices=vertices,
+          faces=faces,
+          texture_coordinates=self._vertex_uvs,
+          vertex_normals=vertex_normals,
+          vertex_colors=self._vertex_colors,
+          properties=props,
+          flip_texture_coordinates=True,
+      )
+      mesh_key = f'mesh_{mesh_counter}'
+      scene_dict[mesh_key] = mesh_part
+      mesh_keys.append(mesh_key)
+      active_part_names.append(part_name)
+      mesh_counter += 1
+
+    scene = mi.load_dict(scene_dict)
+    scene_params = mi.traverse(scene)
+    object.__setattr__(self, '_scene', scene)
+    object.__setattr__(self, '_scene_params', scene_params)
+    object.__setattr__(self, '_mesh_keys', tuple(mesh_keys))
+    object.__setattr__(self, '_active_part_names', tuple(active_part_names))
+
+
+def _ensure_mitsuba_initialized() -> None:
+  """Initializes the Mitsuba variant and registers custom GNM integrators."""
+  if not mi.variant():
+    mi.set_variant('cuda_ad_rgb', 'llvm_ad_rgb')
+  integrators.register()
+
+
+def _prepare_texture_bitmap(
+    tex_frame: (
+        jt.Float[np.ndarray, 'H_tex W_tex 3']
+        | jt.UInt8[np.ndarray, 'H_tex W_tex 3']
+    ),
+    is_uint8: bool,
+    max_tex_dim: int,
+) -> mi.Bitmap:
+  """Normalizes, rescales, and converts a 2D texture array into `mi.Bitmap`."""
+  tex_f32 = tex_frame.astype(np.float32)
+  if is_uint8 or tex_f32.max() > 1.0:
+    tex_f32 = tex_f32 / 255.0
+  tex_f32 = np.clip(tex_f32, 0.0, 1.0)
+  tex_height, tex_width = tex_f32.shape[:2]
+  if tex_height > max_tex_dim or tex_width > max_tex_dim:
+    scale_factor = max_tex_dim / max(tex_height, tex_width)
+    scaled_width = max(1, int(round(tex_width * scale_factor)))
+    scaled_height = max(1, int(round(tex_height * scale_factor)))
+    tex_f32 = cv2.resize(
+        tex_f32, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA
+    )
+    if tex_f32.ndim == 2:
+      tex_f32 = tex_f32[..., np.newaxis]
+  return mi.Bitmap(tex_f32)
