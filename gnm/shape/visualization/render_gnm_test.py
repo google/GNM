@@ -175,5 +175,25 @@ class TestProjectPointsForGNM(parameterized.TestCase):
     )
 
 
+class RenderGNMMeshRendererExportTest(absltest.TestCase):
+
+  def test_mesh_renderer_exposed_and_renders(self):
+    version = gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+    gnm_np = gnm_numpy.GNM.from_remote(
+        gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
+        gnm_numpy.GNMVariant.HEAD,
+    )
+    self.assertIs(
+        render_gnm.GNMMeshRenderer, render_gnm.gnm_pyrender.GNMMeshRenderer
+    )
+    self.assertIs(render_gnm.MeshRenderOutput, render_common.MeshRenderOutput)
+    renderer = render_gnm.GNMMeshRenderer(gnm_np=gnm_np)
+    output = renderer.render(image_size=(64, 64))
+    self.assertIsInstance(output, render_gnm.MeshRenderOutput)
+    self.assertEqual(output.image.shape, (64, 64, 3))
+    self.assertEqual(output.alpha.shape, (64, 64, 1))
+    renderer.close()
+
+
 if __name__ == '__main__':
   absltest.main()
