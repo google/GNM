@@ -14,13 +14,10 @@
 
 """GNM data loader."""
 
-from collections.abc import Sequence
 import io
 from typing import Any
 
-from absl import logging
 from etils import epath
-from gnm.shape import gnm_data_schema
 from gnm.shape.data.versions import gnm_models_catalog
 from gnm.shape.data.versions import gnm_specs
 import numpy as np
@@ -76,14 +73,6 @@ def _load_model_dict_from_file(
 
   del version, variant
 
-  # Validate the data.
-  valid, missing, extra = _validate_gnm_data(data_dict)
-  if not valid:
-    raise ValueError(
-        f'Validation failed for model from {model_file}.'
-        f' Missing: {missing}, Extra: {extra}'
-    )
-
   return _standardize_gnm_data_types(data_dict)
 
 
@@ -113,15 +102,14 @@ def load_model_from_custom_file(
     A dictionary of GNM data.
 
   Raises:
-    ValueError: If the file does not exist or if required fields are missing.
+    ValueError: If the file does not exist, if required fields are missing
+      during type standardization, or if its version or variant is unknown.
   """
   model_file = epath.Path(model_file)
   if not model_file.exists():
     raise ValueError(f'The GNM model file "{model_file}" not found.')
 
-  return _load_custom_gnm_data_from_bytes(
-      model_file.read_bytes(), str(model_file)
-  )
+  return _load_custom_gnm_data_from_bytes(model_file.read_bytes())
 
 
 def _load_npz_bytes(model_bytes: bytes) -> dict[str, Any]:
@@ -132,70 +120,10 @@ def _load_npz_bytes(model_bytes: bytes) -> dict[str, Any]:
 
 def _load_custom_gnm_data_from_bytes(
     model_bytes: bytes,
-    model_file_str: str,
 ) -> dict[str, Any]:
-  """Loads, validates and standardizes custom GNM model content."""
+  """Loads and standardizes custom GNM model content."""
   data_dict = _load_npz_bytes(model_bytes)
-  return _validate_and_standardize_custom_gnm_data(data_dict, model_file_str)
-
-
-def _validate_and_standardize_custom_gnm_data(
-    data_dict: dict[str, Any],
-    model_file_str: str,
-) -> dict[str, Any]:
-  """Validates and standardizes GNM data loaded from a custom model file.
-
-  Missing fields raise an error, whereas extra fields are dropped with a
-  warning.
-
-  Args:
-    data_dict: The raw GNM data dict loaded from the custom model file.
-    model_file_str: The path of the custom model file, used in messages.
-
-  Returns:
-    The validated and standardized GNM data dict.
-
-  Raises:
-    ValueError: If the data dict is missing required fields, or if its version
-      or variant is unknown.
-  """
-  _, missing, extra = _validate_gnm_data(data_dict)
-  if missing:
-    raise ValueError(
-        f'Failed to load the custom GNM model data from "{model_file_str}".'
-        f' Missing fields: {missing}.'
-    )
-  if extra:
-    logging.warning(
-        'The custom GNM model file "%s" contains extra fields which will be'
-        ' ignored: %s.',
-        model_file_str,
-        ','.join(extra),
-    )
-    data_dict = {k: v for k, v in data_dict.items() if k not in extra}
-
   return _standardize_gnm_data_types(data_dict)
-
-
-def _validate_gnm_data(
-    data: dict[str, Any],
-) -> tuple[bool, Sequence[str], Sequence[str]]:
-  """Validates the GNM data dict.
-
-  It returns any extra or missing fields and a boolean indicating if the data
-  dict has exactly the expected fields.
-
-  Args:
-    data: The GNM data dict to validate.
-
-  Returns:
-    A tuple of (bool, Sequence[str], Sequence[str]) indicating if the data dict
-    has exactly the expected fields, the missing fields and the extra fields.
-  """
-  expected_fields = set(gnm_data_schema.GNM_DATA_ATTRIBUTES)
-  missing_fields = list(expected_fields - set(data.keys()))
-  extra_fields = list(set(data.keys()) - expected_fields)
-  return not missing_fields and not extra_fields, missing_fields, extra_fields
 
 
 def _standardize_gnm_data_types(data: dict[str, Any]) -> dict[str, Any]:

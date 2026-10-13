@@ -28,6 +28,7 @@ from absl import logging
 from etils import enp
 from gnm.shape import gnm_base
 from gnm.shape import gnm_common
+from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_typing
 from gnm.shape.data.versions import gnm_specs
@@ -232,6 +233,8 @@ class GNM(gnm_base.GNMBase):
       model_data: Mapping[str, Any],
   ) -> Self:
     """Creates a GNM instance from a model data dictionary."""
+    if not gnm_data_schema.is_model_data_valid(model_data):
+      raise ValueError('Validation failed for GNM model data.')
     init_kwargs = cls._prepare_init_kwargs(model_data)
     # pylint: disable=no-value-for-parameter
     instance = super(GNM, cls).__new__(cls)
