@@ -23,6 +23,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from etils import enp
 from gnm.shape import gnm_common
+import jax
 import numpy as np
 
 # The array backends supported by the GNM math, as (name, xnp module) pairs.
@@ -212,6 +213,27 @@ class JointTransformsWorldTest(parameterized.TestCase):
         transforms[..., :3, 3][1], [0.0, 1.0, 0.0], atol=1e-5
     )
 
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+    joints = xnp.asarray(self.joints, dtype=xnp.float32)
+
+    transforms_rot = np.asarray(
+        gnm_common.joint_transforms_world(
+            joints, rotations, translation, self.parents
+        )
+    )
+    transforms_mat = np.asarray(
+        gnm_common.joint_transforms_world_from_rotation_matrices(
+            joints, rotation_matrices, translation, self.parents
+        )
+    )
+    np.testing.assert_allclose(transforms_mat, transforms_rot, atol=1e-5)
+
 
 class LinearBlendSkinningTest(parameterized.TestCase):
   """Tests for linear_blend_skinning."""
@@ -269,6 +291,34 @@ class LinearBlendSkinningTest(parameterized.TestCase):
         self.parents,
     )
     self.assertEqual(tuple(posed.shape), (4, 3, 3))
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+    vertices = xnp.asarray(self.vertices, dtype=xnp.float32)
+    joints = xnp.asarray(self.joints, dtype=xnp.float32)
+    weights = xnp.asarray(self.weights, dtype=xnp.float32)
+
+    posed_rot = np.asarray(
+        gnm_common.linear_blend_skinning(
+            vertices, joints, rotations, translation, weights, self.parents
+        )
+    )
+    posed_mat = np.asarray(
+        gnm_common.linear_blend_skinning_from_rotation_matrices(
+            vertices,
+            joints,
+            rotation_matrices,
+            translation,
+            weights,
+            self.parents,
+        )
+    )
+    np.testing.assert_allclose(posed_mat, posed_rot, atol=1e-5)
 
 
 class BindPoseTest(parameterized.TestCase):
@@ -375,6 +425,283 @@ class PoseCorrectivesTest(parameterized.TestCase):
         num_vertices=3,
     )
     self.assertEqual(tuple(result.shape), (4, 3, 3))
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_from_rotation_matrices_matches_rotations(self, xnp: enp.NpModule):
+    template = xnp.asarray(np.ones((3, 3)), dtype=xnp.float32)
+    regressor = xnp.asarray(
+        np.arange(2 * 9 * 3 * 3).reshape(2 * 9, 3 * 3) / 100.0,
+        dtype=xnp.float32,
+    )
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+
+    correctives_rot = np.asarray(
+        gnm_common.compute_pose_correctives(
+            rotations,
+            regressor,
+            template,
+            num_joints=2,
+            num_vertices=3,
+        )
+    )
+    correctives_mat = np.asarray(
+        gnm_common.compute_pose_correctives_from_rotation_matrices(
+            rotation_matrices,
+            regressor,
+            template,
+            num_joints=2,
+            num_vertices=3,
+        )
+    )
+    np.testing.assert_allclose(correctives_mat, correctives_rot, atol=1e-5)
+
+
+class ForwardTest(parameterized.TestCase):
+  """Tests for forward and forward_from_rotation_matrices."""
+
+  def setUp(self):
+    super().setUp()
+    # 2 joints, 3 vertices, identity_dim = 2, expression_dim = 2
+    self.template_vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32
+    )
+    self.template_joints = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32
+    )
+    self.vertex_identity_basis = np.ones((2, 3, 3), dtype=np.float32) * 0.01
+    self.joint_identity_basis = np.ones((2, 2, 3), dtype=np.float32) * 0.02
+    self.expression_basis = np.ones((2, 3, 3), dtype=np.float32) * 0.03
+    self.skinning_weights = np.array(
+        [[1.0, 0.5, 0.0], [0.0, 0.5, 1.0]], dtype=np.float32
+    )
+    self.parents = [0, 0]
+    self.pose_correctives_regressor = (
+        np.arange(2 * 9 * 3 * 3).reshape(2 * 9, 3 * 3).astype(np.float32)
+        * 0.001
+    )
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_forward_matches_forward_from_rotation_matrices(
+      self, xnp: enp.NpModule
+  ):
+    identity = xnp.asarray([0.5, -0.2], dtype=xnp.float32)
+    expression = xnp.asarray([-0.1, 0.3], dtype=xnp.float32)
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    rotation_matrices = gnm_common.axis_angle_to_rotation_matrix(rotations)
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+
+    kwargs = dict(
+        template_vertex_positions=xnp.asarray(
+            self.template_vertices, dtype=xnp.float32
+        ),
+        template_joint_positions=xnp.asarray(
+            self.template_joints, dtype=xnp.float32
+        ),
+        vertex_identity_basis=xnp.asarray(
+            self.vertex_identity_basis, dtype=xnp.float32
+        ),
+        joint_identity_basis=xnp.asarray(
+            self.joint_identity_basis, dtype=xnp.float32
+        ),
+        expression_basis=xnp.asarray(self.expression_basis, dtype=xnp.float32),
+        skinning_weights=xnp.asarray(self.skinning_weights, dtype=xnp.float32),
+        joint_parent_indices=self.parents,
+        pose_correctives_regressor=xnp.asarray(
+            self.pose_correctives_regressor, dtype=xnp.float32
+        ),
+    )
+
+    out_rot = gnm_common.forward(
+        identity=identity,
+        expression=expression,
+        rotations=rotations,
+        translation=translation,
+        **kwargs,
+    )
+    out_mat = gnm_common.forward_from_rotation_matrices(
+        identity=identity,
+        expression=expression,
+        rotation_matrices=rotation_matrices,
+        translation=translation,
+        **kwargs,
+    )
+
+    self.assertIsInstance(out_rot, gnm_common.GNMOutputs)
+    self.assertIsInstance(out_mat, gnm_common.GNMOutputs)
+
+    out_aa = out_rot
+    vertices_bind_pose, vertices_posed, joint_transforms = out_aa
+    self.assertIs(vertices_bind_pose, out_aa.vertices_bind_pose)
+    self.assertIs(vertices_posed, out_aa.vertices_posed)
+    self.assertIs(joint_transforms, out_aa.joint_transforms)
+
+    np.testing.assert_allclose(
+        np.asarray(out_mat.vertices_posed),
+        np.asarray(out_rot.vertices_posed),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_mat.vertices_bind_pose),
+        np.asarray(out_rot.vertices_bind_pose),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_mat.joint_transforms),
+        np.asarray(out_rot.joint_transforms),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_mat.joints),
+        np.asarray(out_rot.joints),
+        atol=1e-5,
+    )
+    self.assertEqual(tuple(out_rot.vertices_posed.shape), (3, 3))
+    self.assertEqual(tuple(out_rot.vertices_bind_pose.shape), (3, 3))
+    self.assertEqual(tuple(out_rot.joint_transforms.shape), (2, 4, 4))
+    self.assertEqual(tuple(out_rot.joints.shape), (2, 3))
+
+  def test_forward_jax_jit_pytree_compatibility(self):
+    xnp = enp.lazy.jnp
+    identity = xnp.asarray([0.5, -0.2], dtype=xnp.float32)
+    expression = xnp.asarray([-0.1, 0.3], dtype=xnp.float32)
+    rotations = xnp.asarray(
+        [[0.1, -0.2, 0.3], [0.4, 0.5, -0.6]], dtype=xnp.float32
+    )
+    translation = xnp.asarray([1.0, 2.0, 3.0], dtype=xnp.float32)
+
+    kwargs = dict(
+        template_vertex_positions=xnp.asarray(
+            self.template_vertices, dtype=xnp.float32
+        ),
+        template_joint_positions=xnp.asarray(
+            self.template_joints, dtype=xnp.float32
+        ),
+        vertex_identity_basis=xnp.asarray(
+            self.vertex_identity_basis, dtype=xnp.float32
+        ),
+        joint_identity_basis=xnp.asarray(
+            self.joint_identity_basis, dtype=xnp.float32
+        ),
+        expression_basis=xnp.asarray(self.expression_basis, dtype=xnp.float32),
+        skinning_weights=xnp.asarray(self.skinning_weights, dtype=xnp.float32),
+        joint_parent_indices=tuple(self.parents),
+        pose_correctives_regressor=xnp.asarray(
+            self.pose_correctives_regressor, dtype=xnp.float32
+        ),
+    )
+
+    jitted_forward = jax.jit(
+        gnm_common.forward, static_argnames=('joint_parent_indices',)
+    )
+    out = jitted_forward(
+        identity=identity,
+        expression=expression,
+        rotations=rotations,
+        translation=translation,
+        **kwargs,
+    )
+
+    self.assertIsInstance(out, gnm_common.GNMOutputs)
+    vertices_bind_pose, vertices_posed, joint_transforms = out
+    self.assertEqual(tuple(out.vertices_posed.shape), (3, 3))
+    self.assertEqual(tuple(out.vertices_bind_pose.shape), (3, 3))
+    self.assertEqual(tuple(out.joint_transforms.shape), (2, 4, 4))
+    self.assertEqual(tuple(out.joints.shape), (2, 3))
+    np.testing.assert_allclose(
+        np.asarray(vertices_posed), np.asarray(out.vertices_posed)
+    )
+    np.testing.assert_allclose(
+        np.asarray(vertices_bind_pose), np.asarray(out.vertices_bind_pose)
+    )
+    np.testing.assert_allclose(
+        np.asarray(joint_transforms), np.asarray(out.joint_transforms)
+    )
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_forward_with_all_none_inputs_returns_rest_vertices(
+      self, xnp: enp.NpModule
+  ):
+    kwargs = dict(
+        template_vertex_positions=xnp.asarray(
+            self.template_vertices, dtype=xnp.float32
+        ),
+        template_joint_positions=xnp.asarray(
+            self.template_joints, dtype=xnp.float32
+        ),
+        vertex_identity_basis=xnp.asarray(
+            self.vertex_identity_basis, dtype=xnp.float32
+        ),
+        joint_identity_basis=xnp.asarray(
+            self.joint_identity_basis, dtype=xnp.float32
+        ),
+        expression_basis=xnp.asarray(self.expression_basis, dtype=xnp.float32),
+        skinning_weights=xnp.asarray(self.skinning_weights, dtype=xnp.float32),
+        joint_parent_indices=self.parents,
+        pose_correctives_regressor=xnp.asarray(
+            self.pose_correctives_regressor, dtype=xnp.float32
+        ),
+    )
+    out = gnm_common.forward(
+        identity=None,
+        expression=None,
+        rotations=None,
+        translation=None,
+        **kwargs,
+    )
+    self.assertIsInstance(out, gnm_common.GNMOutputs)
+    self.assertEqual(tuple(out.vertices_posed.shape), (3, 3))
+    self.assertEqual(tuple(out.vertices_bind_pose.shape), (3, 3))
+    self.assertEqual(tuple(out.joint_transforms.shape), (2, 4, 4))
+    self.assertEqual(tuple(out.joints.shape), (2, 3))
+    np.testing.assert_allclose(
+        np.asarray(out.vertices_posed), self.template_vertices, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(out.vertices_bind_pose), self.template_vertices, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(out.joints), self.template_joints, atol=1e-5
+    )
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_forward_preserves_batch_shape_with_none_subset(
+      self, xnp: enp.NpModule
+  ):
+    rotations = xnp.asarray(np.zeros((4, 2, 3)), dtype=xnp.float32)
+    kwargs = dict(
+        template_vertex_positions=xnp.asarray(
+            self.template_vertices, dtype=xnp.float32
+        ),
+        template_joint_positions=xnp.asarray(
+            self.template_joints, dtype=xnp.float32
+        ),
+        vertex_identity_basis=xnp.asarray(
+            self.vertex_identity_basis, dtype=xnp.float32
+        ),
+        joint_identity_basis=xnp.asarray(
+            self.joint_identity_basis, dtype=xnp.float32
+        ),
+        expression_basis=xnp.asarray(self.expression_basis, dtype=xnp.float32),
+        skinning_weights=xnp.asarray(self.skinning_weights, dtype=xnp.float32),
+        joint_parent_indices=self.parents,
+    )
+    out = gnm_common.forward(
+        identity=None,
+        expression=None,
+        rotations=rotations,
+        translation=None,
+        **kwargs,
+    )
+    self.assertIsInstance(out, gnm_common.GNMOutputs)
+    self.assertEqual(tuple(out.vertices_posed.shape), (4, 3, 3))
+    self.assertEqual(tuple(out.vertices_bind_pose.shape), (4, 3, 3))
+    self.assertEqual(tuple(out.joint_transforms.shape), (4, 2, 4, 4))
+    self.assertEqual(tuple(out.joints.shape), (4, 2, 3))
 
 
 class TestConstantBatch(parameterized.TestCase):
