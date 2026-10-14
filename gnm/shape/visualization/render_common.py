@@ -19,9 +19,11 @@ different `render_gnm` implementations: default scene parameters, texture
 loading, camera/projection helpers and batching utilities.
 """
 
+import abc
 from collections.abc import Sequence
+import dataclasses
 import functools
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 from etils import epath
 from gnm.shape import gnm_numpy
@@ -29,8 +31,10 @@ from gnm.shape.visualization import camera_conversions
 from gnm.shape.visualization import vertex_colors as vertex_colors_module
 import imageio
 import immutabledict
+import jaxtyping as jt
 import numpy as np
 import numpy.typing as npt
+import tqdm.autonotebook as tqdm
 
 FloatArray = npt.NDArray[np.floating]
 ColorOrImage = npt.NDArray[np.uint8] | FloatArray | Sequence[float] | float
@@ -57,6 +61,7 @@ class DefaultTexture:
 
 DEFAULT_TEXTURE = DefaultTexture()
 Texture = FloatArray | DefaultTexture | dict[str, FloatArray] | None
+TriangleGroups: TypeAlias = str | Sequence[str]
 
 
 class BackendRenderFn(Protocol):
@@ -84,6 +89,344 @@ class BackendRenderFn(Protocol):
       verbose: bool = False,
   ) -> np.ndarray:
     ...
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MeshRenderOutput:
+  """Output of the stateful GNM 3D mesh renderer.
+
+  Attributes:
+    image: Rendered RGB image as a uint8 NumPy array of shape (..., H, W, 3).
+    alpha: Rendered coverage/opacity mask in [0.0, 1.0] as a float32 NumPy array
+      of shape (..., H, W, 1) after multisample anti-aliasing.
+  """
+
+  image: jt.UInt8[np.ndarray, '... H W 3']
+  alpha: jt.Float[np.ndarray, '... H W 1']
+
+  def composite(
+      self,
+      background_image: jt.UInt8[np.ndarray, '... H W 3'] | None = None,
+      *,
+      alpha: float = 1.0,
+      default_background_color: tuple[float, float, float] = (
+          DEFAULT_BACKGROUND_COLOR
+      ),
+  ) -> jt.UInt8[np.ndarray, '... H W 3']:
+    """Composites the rendered mesh foreground over a background image.
+
+    Args:
+      background_image: Optional uint8 RGB background image array of shape (...,
+        H, W, 3). If None, `default_background_color` is used.
+      alpha: Global opacity multiplier applied to `self.alpha`. Defaults to 1.0.
+      default_background_color: RGB float tuple in [0.0, 1.0] for the solid
+        background when `background_image` is None.
+
+    Returns:
+      Composited uint8 RGB image array of shape (..., H, W, 3).
+    """
+    foreground_f32 = np.asarray(self.image, dtype=np.float32) / 255.0
+    height, width = foreground_f32.shape[-3:-1]
+    if background_image is not None:
+      background_f32 = np.asarray(background_image, dtype=np.float32) / 255.0
+    else:
+      background_f32 = np.broadcast_to(
+          np.asarray(default_background_color, dtype=np.float32),
+          (height, width, 3),
+      )
+    effective_alpha = float(alpha) * np.asarray(self.alpha, dtype=np.float32)
+    composited_f32 = foreground_f32 * effective_alpha + background_f32 * (
+        1.0 - effective_alpha
+    )
+    return np.clip(composited_f32 * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class BaseGNMMeshRenderer(abc.ABC):
+  """Abstract base class for stateful 3D GNM mesh renderers.
+
+  Caches static mesh topology, UV coordinates, vertex colors, and loaded
+  textures for a `gnm_numpy.GNM` instance across frames and repeated render
+  calls.
+
+  Attributes:
+    gnm_np: NumPy GNM shape model used for topology, normals, and textures.
+    triangles: Vertex group arithmetic expression string (e.g.
+      `'~eye_exteriors'`) or sequence of group expression strings (e.g.
+      `('~eye_exteriors', '-teeth')`).
+    texture: Texture configuration (`DEFAULT_TEXTURE`, custom texture
+      array/mapping, or `None` to disable texture).
+    multisample_antialiasing: Supersampling factor for anti-aliasing. Defaults
+      to 1 (native resolution).
+    verbose: Default flag controlling whether to display a progress bar.
+  """
+
+  gnm_np: gnm_numpy.GNM
+  triangles: TriangleGroups = '~eye_exteriors'
+  texture: Texture = DEFAULT_TEXTURE
+  multisample_antialiasing: int = 1
+  verbose: bool = False
+
+  _triangle_dict: dict[str, jt.Int[np.ndarray, 'F_part 3']] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _vertex_colors: jt.Float[np.ndarray, 'V 3'] = dataclasses.field(
+      default_factory=lambda: np.empty((0, 3), dtype=np.float32),
+      init=False,
+      repr=False,
+      compare=False,
+  )
+  _vertex_uvs: jt.Float[np.ndarray, 'V 2'] = dataclasses.field(
+      default_factory=lambda: np.empty((0, 2), dtype=np.float32),
+      init=False,
+      repr=False,
+      compare=False,
+  )
+  _raw_textures: dict[str, jt.UInt8[np.ndarray, '... H_tex W_tex 3']] = (
+      dataclasses.field(
+          default_factory=dict, init=False, repr=False, compare=False
+      )
+  )
+
+  def __post_init__(self) -> None:
+    object.__setattr__(
+        self,
+        '_triangle_dict',
+        self._compute_triangle_dict(self.triangles),
+    )
+
+    raw_vertex_colors = vertex_colors_module.get_vertex_colors(
+        self.gnm_np, vertex_colors_module.DEFAULT_COLOR
+    )
+    if raw_vertex_colors.shape[-1] == 4:
+      raw_vertex_colors = raw_vertex_colors[..., :3]
+    object.__setattr__(
+        self,
+        '_vertex_colors',
+        np.asarray(raw_vertex_colors, dtype=np.float32),
+    )
+    object.__setattr__(
+        self,
+        '_vertex_uvs',
+        np.asarray(self.gnm_np.vertex_uvs, dtype=np.float32),
+    )
+    object.__setattr__(
+        self,
+        '_raw_textures',
+        load_texture(self.gnm_np, self.texture),
+    )
+
+  def update_triangles(
+      self,
+      triangles: TriangleGroups,
+  ) -> None:
+    """Updates active mesh triangles and syncs or invalidates backend state."""
+    new_triangle_dict = self._compute_triangle_dict(triangles)
+    if self._triangle_dict and all(
+        part_name in self._triangle_dict
+        and np.array_equal(self._triangle_dict[part_name], new_faces)
+        for part_name, new_faces in new_triangle_dict.items()
+    ):
+      object.__setattr__(self, 'triangles', triangles)
+      return
+
+    object.__setattr__(self, 'triangles', triangles)
+    object.__setattr__(self, '_triangle_dict', new_triangle_dict)
+    self._on_triangles_updated()
+
+  @abc.abstractmethod
+  def update_vertices(
+      self,
+      vertices: jt.Float[jt.ArrayLike, 'V 3'],
+      vertex_normals: jt.Float[jt.ArrayLike, 'V 3'] | None = None,
+      *,
+      max_tex_dim: int = 1024,
+  ) -> None:
+    """Updates scene mesh vertices and normals in-place."""
+
+  @abc.abstractmethod
+  def update_camera(
+      self,
+      world_to_camera: jt.Float[np.ndarray, '4 4'],
+      camera_to_image: (
+          jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3']
+      ),
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates camera transform and projection parameters in OpenCV convention."""
+
+  def render(
+      self,
+      vertices: jt.Float[jt.ArrayLike, '... V 3'] | None = None,
+      world_to_camera: jt.Float[np.ndarray, '... 4 4'] | None = None,
+      camera_to_image: (
+          jt.Float[np.ndarray, '... 4 4']
+          | jt.Float[np.ndarray, '... 3 3']
+          | None
+      ) = None,
+      *,
+      image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
+      triangles: TriangleGroups | None = None,
+      verbose: bool | None = None,
+  ) -> MeshRenderOutput:
+    """Renders single-frame or batched 3D GNM meshes.
+
+    Args:
+      vertices: Optional 3D mesh vertices of shape (..., V, 3). If None,
+        defaults to `self.gnm_np.template_vertex_positions`.
+      world_to_camera: Optional OpenCV world-to-camera matrices of shape (...,
+        4, 4). If None, defaults to `get_look_at_world_to_camera`.
+      camera_to_image: Optional OpenCV camera-to-image matrices of shape (...,
+        4, 4) or (..., 3, 3). If None, defaults to
+        `get_fill_factor_camera_to_image`.
+      image_size: Output image dimensions as (width, height).
+      triangles: Optional triangle group expression or explicit face index array
+        to update active mesh triangles before rendering.
+      verbose: Optional progress-bar verbosity override. Defaults to
+        `self.verbose`.
+
+    Returns:
+      A `MeshRenderOutput` containing the rendered uint8 RGB image of shape
+      (..., height, width, 3) and float32 coverage mask in [0.0, 1.0] of shape
+      (..., height, width, 1).
+    """
+    if triangles is not None:
+      self.update_triangles(triangles)
+
+    resolved_verbose = self.verbose if verbose is None else verbose
+
+    if vertices is None:
+      vertices_arr = np.asarray(
+          self.gnm_np.template_vertex_positions, dtype=np.float32
+      )
+    else:
+      vertices_arr = np.asarray(vertices, dtype=np.float32)
+
+    if world_to_camera is None:
+      world_to_camera_arr = np.asarray(
+          get_look_at_world_to_camera(self.gnm_np, vertices_arr),
+          dtype=np.float32,
+      )
+    else:
+      world_to_camera_arr = np.asarray(world_to_camera, dtype=np.float32)
+
+    if camera_to_image is None:
+      camera_to_image_arr = np.asarray(
+          get_fill_factor_camera_to_image(
+              self.gnm_np, vertices_arr, image_size=image_size
+          ),
+          dtype=np.float32,
+      )
+    else:
+      camera_to_image_arr = np.asarray(camera_to_image, dtype=np.float32)
+
+    width, height = int(image_size[0]), int(image_size[1])
+    resolved_image_size = (width, height)
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+    max_tex_dim = max(render_width, render_height)
+
+    batch_dims = get_batch_dim(
+        (vertices_arr, 2),
+        (world_to_camera_arr, 2),
+        (camera_to_image_arr, 2),
+    )
+    num_frames = int(np.prod(batch_dims)) if batch_dims else 1
+
+    batched_vertices = np.broadcast_to(
+        vertices_arr, (*batch_dims, *vertices_arr.shape[-2:])
+    ).reshape(num_frames, *vertices_arr.shape[-2:])
+    batched_normals = np.asarray(
+        self.gnm_np.compute_vertex_normals(
+            batched_vertices[:, np.newaxis, :, :]
+        )[:, 0, :, :],
+        dtype=np.float32,
+    )
+    batched_world_to_camera = np.broadcast_to(
+        world_to_camera_arr, (*batch_dims, *world_to_camera_arr.shape[-2:])
+    ).reshape(num_frames, *world_to_camera_arr.shape[-2:])
+    batched_camera_to_image = np.broadcast_to(
+        camera_to_image_arr, (*batch_dims, *camera_to_image_arr.shape[-2:])
+    ).reshape(num_frames, *camera_to_image_arr.shape[-2:])
+
+    foreground_frames: list[jt.Float[np.ndarray, 'H W 3']] = []
+    alpha_frames: list[jt.Float[np.ndarray, 'H W 1']] = []
+    frame_indices = tqdm.trange(
+        num_frames,
+        disable=not resolved_verbose,
+        desc=self._progress_bar_desc(),
+        leave=False,
+    )
+
+    for frame_idx in frame_indices:
+      self.update_camera(
+          world_to_camera=batched_world_to_camera[frame_idx],
+          camera_to_image=batched_camera_to_image[frame_idx],
+          image_size=resolved_image_size,
+      )
+      self.update_vertices(
+          vertices=batched_vertices[frame_idx],
+          vertex_normals=batched_normals[frame_idx],
+          max_tex_dim=max_tex_dim,
+      )
+      frame_rgb, frame_alpha = self._render_single_frame(
+          width=width, height=height
+      )
+      foreground_frames.append(frame_rgb)
+      alpha_frames.append(frame_alpha)
+
+    self._after_batch_render()
+
+    stacked_fg = np.stack(foreground_frames, axis=0).reshape(
+        *batch_dims, height, width, 3
+    )
+    stacked_alpha = np.stack(alpha_frames, axis=0).reshape(
+        *batch_dims, height, width, 1
+    )
+    fg_uint8 = np.clip(stacked_fg * 255.0, 0.0, 255.0).astype(np.uint8)
+    return MeshRenderOutput(image=fg_uint8, alpha=stacked_alpha)
+
+  def close(self) -> None:
+    """Releases any persistent backend rendering resources."""
+
+  @abc.abstractmethod
+  def _on_triangles_updated(self) -> None:
+    """Synchronizes or invalidates backend state after `_triangle_dict` changes."""
+
+  @abc.abstractmethod
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[jt.Float[np.ndarray, 'H W 3'], jt.Float[np.ndarray, 'H W 1']]:
+    """Renders the current scene state for one frame at (height, width)."""
+
+  def _after_batch_render(self) -> None:
+    """Hook invoked once after completing a batch of frame renders."""
+
+  def _progress_bar_desc(self) -> str:
+    """Returns the progress bar description string for this backend."""
+    return 'Rendering'
+
+  def _compute_triangle_dict(
+      self,
+      triangles: TriangleGroups,
+  ) -> dict[str, jt.Int[np.ndarray, 'F_part 3']]:
+    """Resolves vertex group arithmetic expressions to per-component faces."""
+    group_names = (
+        (triangles,) if isinstance(triangles, str) else tuple(triangles)
+    )
+    all_triangle_indices = self.gnm_np.triangle_indices_for_group(*group_names)
+    triangle_dict: dict[str, jt.Int[np.ndarray, 'F_part 3']] = {}
+    for part_name in self.gnm_np.mesh_component_names:
+      group_triangle_indices = self.gnm_np.triangle_indices_for_group(part_name)
+      intersection = np.intersect1d(
+          group_triangle_indices, all_triangle_indices
+      )
+      triangle_dict[part_name] = np.asarray(
+          self.gnm_np.triangles[intersection], dtype=np.int32
+      )
+    return triangle_dict
 
 
 def render_gnm_mesh(

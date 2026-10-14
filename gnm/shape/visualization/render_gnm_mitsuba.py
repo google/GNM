@@ -20,6 +20,9 @@ from gnm.shape.visualization import render_common
 import numpy as np
 import numpy.typing as npt
 
+GNMMeshRenderer = gnm_mitsuba.GNMMeshRenderer
+MeshRenderOutput = render_common.MeshRenderOutput
+
 
 def render_gnm(
     gnm_np: gnm_numpy.GNM,
