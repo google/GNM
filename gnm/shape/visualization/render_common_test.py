@@ -21,6 +21,7 @@ from gnm.shape import gnm_numpy
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import camera_conversions
 from gnm.shape.visualization import render_common
+import jaxtyping as jt
 import numpy as np
 
 _TupleOfInts = tuple[int, ...]
@@ -502,6 +503,151 @@ class TestRenderGNMMesh(parameterized.TestCase):
         image_size=image_size,
     )
     self.assertEqual(res.shape, (3, 4, 48, 64, 3))
+
+
+class TestMeshRenderOutput(parameterized.TestCase):
+  """Tests for MeshRenderOutput dataclass and compositing."""
+
+  def test_composite_with_default_background(self):
+    """Tests compositing with default solid background."""
+    image = np.full((10, 20, 3), 200, dtype=np.uint8)
+    alpha = np.ones((10, 20, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    composited = output.composite()
+    self.assertEqual(composited.shape, (10, 20, 3))
+    self.assertEqual(composited.dtype, np.uint8)
+    # With alpha=1.0, foreground should match exactly.
+    np.testing.assert_array_equal(composited, image)
+
+    # With alpha=0.0, background should match DEFAULT_BACKGROUND_COLOR (0.95).
+    composited_bg = output.composite(alpha=0.0)
+    expected_bg = int(render_common.DEFAULT_BACKGROUND_COLOR[0] * 255.0)
+    np.testing.assert_allclose(composited_bg, expected_bg, atol=1)
+
+  def test_composite_with_custom_background(self):
+    """Tests compositing with custom background image."""
+    image = np.full((12, 16, 3), 255, dtype=np.uint8)
+    alpha = np.zeros((12, 16, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    background = np.full((12, 16, 3), 50, dtype=np.uint8)
+    composited = output.composite(background_image=background)
+    self.assertEqual(composited.shape, (12, 16, 3))
+    # With alpha=0.0, output should match background.
+    np.testing.assert_array_equal(composited, background)
+
+  def test_composite_with_alpha_scaling(self):
+    """Tests compositing with alpha=0.5 scaling."""
+    image = np.full((4, 4, 3), 200, dtype=np.uint8)
+    alpha = np.ones((4, 4, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    background = np.full((4, 4, 3), 100, dtype=np.uint8)
+    composited = output.composite(background_image=background, alpha=0.5)
+    # Expected: 200 * 0.5 + 100 * 0.5 = 150
+    np.testing.assert_allclose(composited, 150, atol=1)
+
+
+class _DummyGNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Dummy concrete subclass of BaseGNMMeshRenderer for testing."""
+
+  def update_vertices(
+      self,
+      vertices: jt.Float[jt.ArrayLike, 'V 3'],
+      vertex_normals: jt.Float[jt.ArrayLike, 'V 3'] | None = None,
+      *,
+      max_tex_dim: int = 1024,
+  ) -> None:
+    del vertices, vertex_normals, max_tex_dim
+
+  def update_camera(
+      self,
+      world_to_camera: jt.Float[np.ndarray, '4 4'],
+      camera_to_image: (
+          jt.Float[np.ndarray, '4 4'] | jt.Float[np.ndarray, '3 3']
+      ),
+      image_size: tuple[int, int],
+  ) -> None:
+    del world_to_camera, camera_to_image, image_size
+
+  def _on_triangles_updated(self) -> None:
+    pass
+
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[jt.Float[np.ndarray, 'H W 3'], jt.Float[np.ndarray, 'H W 1']]:
+    rendered_rgb = np.ones((height, width, 3), dtype=np.float32)
+    rendered_alpha = np.ones((height, width, 1), dtype=np.float32)
+    return rendered_rgb, rendered_alpha
+
+
+class TestBaseGNMMeshRenderer(parameterized.TestCase):
+  """Tests for BaseGNMMeshRenderer."""
+
+  gnm_np: gnm_numpy.GNM
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.gnm_np = gnm_numpy.GNM.from_local(
+        gnm_numpy.GNMMajorVersion(
+            gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0].removeprefix('v')
+        ),
+        gnm_numpy.GNMVariant.HEAD,
+    )
+
+  def test_post_init_caches(self):
+    """Tests that __post_init__ populates cached topology, colors, UVs, textures."""
+    renderer = _DummyGNMMeshRenderer(gnm_np=self.gnm_np)
+    self.assertIsInstance(renderer._triangle_dict, dict)
+    for part_name in self.gnm_np.mesh_component_names:
+      self.assertIn(part_name, renderer._triangle_dict)
+
+    self.assertEqual(renderer._vertex_colors.shape[-1], 3)
+    self.assertEqual(renderer._vertex_uvs.shape[-1], 2)
+    self.assertIsInstance(renderer._raw_textures, dict)
+
+  def test_render_defaults(self):
+    """Tests render method with default camera and vertices."""
+    renderer = _DummyGNMMeshRenderer(gnm_np=self.gnm_np)
+    render_output = renderer.render(image_size=(32, 24))
+    self.assertIsInstance(render_output, render_common.MeshRenderOutput)
+    self.assertEqual(render_output.image.shape, (24, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (24, 32, 1))
+    self.assertEqual(render_output.image.dtype, np.uint8)
+    self.assertEqual(render_output.alpha.dtype, np.float32)
+
+  def test_render_batched(self):
+    """Tests render method with batched vertices."""
+    renderer = _DummyGNMMeshRenderer(gnm_np=self.gnm_np)
+    template_vertices = self.gnm_np.template_vertex_positions
+    batched_vertices = np.broadcast_to(
+        template_vertices, (2, 3, *template_vertices.shape)
+    )
+    render_output = renderer.render(
+        vertices=batched_vertices, image_size=(16, 12)
+    )
+    self.assertEqual(render_output.image.shape, (2, 3, 12, 16, 3))
+    self.assertEqual(render_output.alpha.shape, (2, 3, 12, 16, 1))
+
+  def test_render_triangles_override(self):
+    """Tests render method with triangles override."""
+    renderer = _DummyGNMMeshRenderer(gnm_np=self.gnm_np)
+    render_output = renderer.render(
+        triangles=('~eye_exteriors', '-teeth'), image_size=(16, 12)
+    )
+    self.assertEqual(renderer.triangles, ('~eye_exteriors', '-teeth'))
+    self.assertEqual(render_output.image.shape, (12, 16, 3))
+
+  def test_update_triangles_with_sequence_of_groups(self):
+    """Tests updating triangles with a sequence of vertex group expressions."""
+    renderer = _DummyGNMMeshRenderer(gnm_np=self.gnm_np)
+    renderer.update_triangles(('skin', '-left_eye'))
+    self.assertEqual(renderer.triangles, ('skin', '-left_eye'))
+    self.assertIsInstance(renderer._triangle_dict, dict)
 
 
 if __name__ == '__main__':
