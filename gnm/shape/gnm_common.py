@@ -234,6 +234,88 @@ def axis_angle_to_rotation_matrix(
   return matrix
 
 
+def rotation_matrix_to_axis_angles(
+    rotation_matrix: enpt.FloatArray['... 3 3'],
+    epsilon: float = _EPSILON,
+) -> enpt.FloatArray['... 3']:
+  """Converts a batch of 3x3 rotation matrices into axis-angle vectors.
+
+  Uses a numerically stable conversion through quaternions to avoid
+  singularities at angle 0 and angle pi.
+
+  Args:
+    rotation_matrix: A batch of 3x3 rotation matrices. Shape: `(..., 3, 3)`.
+    epsilon: A small value to avoid division by zero.
+
+  Returns:
+    A batch of axis-angle vectors where direction represents the rotation axis
+    and magnitude represents the rotation angle in radians. Shape: `(..., 3)`.
+  """
+  xnp = enp.get_np_module(rotation_matrix)
+  eps = xnp.asarray(epsilon, dtype=rotation_matrix.dtype)
+
+  m00 = rotation_matrix[..., 0, 0]
+  m11 = rotation_matrix[..., 1, 1]
+  m22 = rotation_matrix[..., 2, 2]
+
+  # Case 1: trace > 0
+  t1 = m00 + m11 + m22
+  s1 = xnp.sqrt(xnp.maximum(t1 + 1.0, eps)) * 2.0
+  w1 = 0.25 * s1
+  x1 = (rotation_matrix[..., 2, 1] - rotation_matrix[..., 1, 2]) / s1
+  y1 = (rotation_matrix[..., 0, 2] - rotation_matrix[..., 2, 0]) / s1
+  z1 = (rotation_matrix[..., 1, 0] - rotation_matrix[..., 0, 1]) / s1
+
+  # Case 2: m00 max
+  s2 = xnp.sqrt(xnp.maximum(1.0 + m00 - m11 - m22, eps)) * 2.0
+  w2 = (rotation_matrix[..., 2, 1] - rotation_matrix[..., 1, 2]) / s2
+  x2 = 0.25 * s2
+  y2 = (rotation_matrix[..., 0, 1] + rotation_matrix[..., 1, 0]) / s2
+  z2 = (rotation_matrix[..., 0, 2] + rotation_matrix[..., 2, 0]) / s2
+
+  # Case 3: m11 max
+  s3 = xnp.sqrt(xnp.maximum(1.0 + m11 - m00 - m22, eps)) * 2.0
+  w3 = (rotation_matrix[..., 0, 2] - rotation_matrix[..., 2, 0]) / s3
+  x3 = (rotation_matrix[..., 0, 1] + rotation_matrix[..., 1, 0]) / s3
+  y3 = 0.25 * s3
+  z3 = (rotation_matrix[..., 1, 2] + rotation_matrix[..., 2, 1]) / s3
+
+  # Case 4: m22 max
+  s4 = xnp.sqrt(xnp.maximum(1.0 + m22 - m00 - m11, eps)) * 2.0
+  w4 = (rotation_matrix[..., 1, 0] - rotation_matrix[..., 0, 1]) / s4
+  x4 = (rotation_matrix[..., 0, 2] + rotation_matrix[..., 2, 0]) / s4
+  y4 = (rotation_matrix[..., 1, 2] + rotation_matrix[..., 2, 1]) / s4
+  z4 = 0.25 * s4
+
+  cond1 = t1 > 0
+  cond2 = (m00 > m11) & (m00 > m22)
+  cond3 = m11 > m22
+
+  w = xnp.where(cond1, w1, xnp.where(cond2, w2, xnp.where(cond3, w3, w4)))
+  x = xnp.where(cond1, x1, xnp.where(cond2, x2, xnp.where(cond3, x3, x4)))
+  y = xnp.where(cond1, y1, xnp.where(cond2, y2, xnp.where(cond3, y3, y4)))
+  z = xnp.where(cond1, z1, xnp.where(cond2, z2, xnp.where(cond3, z3, z4)))
+
+  q_xyz = xnp.stack([x, y, z], axis=-1)
+  w = w[..., None]
+
+  # Enforce w >= 0 so that angle is in [0, pi], matching standard convention.
+  should_flip = w < 0.0
+  w = xnp.where(should_flip, -w, w)
+  q_xyz = xnp.where(should_flip, -q_xyz, q_xyz)
+
+  zero = xnp.asarray(0.0, dtype=rotation_matrix.dtype)
+  d = xnp.sqrt(
+      xnp.maximum(xnp.sum(xnp.square(q_xyz), axis=-1, keepdims=True), zero)
+  )
+  alpha = xnp.arctan2(d, w)
+
+  safe_d = xnp.where(d > 0.0, d, 1.0)
+  scale = xnp.where(d > 0.0, alpha / safe_d, 1.0)
+
+  return 2.0 * scale * q_xyz
+
+
 def joint_transforms_world(
     joints: enpt.FloatArray['... J 3'],
     rotations: enpt.FloatArray['... J 3'],
