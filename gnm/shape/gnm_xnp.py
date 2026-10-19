@@ -30,6 +30,7 @@ from gnm.shape import gnm_base
 from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_typing
+from gnm.shape import gnm_udim
 from gnm.shape.data.versions import gnm_specs
 import numpy as np
 import numpy.typing as npt
@@ -78,8 +79,10 @@ class GNM(gnm_base.GNMBase):
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
-    quad_uvs: Texture coordinates per quad, (Q, 4, 2).
-    triangle_uvs: Texture coordinates per triangle, (T, 3, 2).
+    quad_uvs: Texture coordinates per quad, (Q, 4, 2). All regions share the
+      unit square and overlap there; prefer `quad_uvs_udim`.
+    triangle_uvs: Texture coordinates per triangle, (T, 3, 2). All regions share
+      the unit square and overlap there; prefer `triangle_uvs_udim`.
     mesh_component_names: The vertex group name corresponding to each separate
       mesh part.
     mirror_indices: The index of each vertex on the other side of the mesh.
@@ -102,6 +105,10 @@ class GNM(gnm_base.GNMBase):
     expression_dim: The dimensionality of the linear expression basis E.
     edge_list: The quad topology represented as a list of directed edges (E, 2).
     vertex_uvs: Per-vertex UV texture coordinates shaped (V, 2).
+    quad_udim_tiles: The UDIM tile number of each quad, (Q,).
+    triangle_udim_tiles: The UDIM tile number of each triangle, (T,).
+    quad_uvs_udim: Per-quad UDIM texture coordinates, (Q, 4, 2).
+    triangle_uvs_udim: Per-triangle UDIM texture coordinates, (T, 3, 2).
   """
 
   _shape_error_type = ValueError
@@ -640,6 +647,55 @@ class GNM(gnm_base.GNMBase):
 
   def vertex_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
     return self.vertex_uvs[self.vertex_group_indices(*names)]
+
+  @property
+  def quad_udim_tiles(self) -> npt.NDArray[np.int32]:
+    """The UDIM tile number of each quad, (Q,).
+
+    Computed on access from vertex groups without caching. Each region of
+    `gnm_udim.UDIM_TILE_REGIONS` whose vertex groups this variant defines
+    claims the quads it covers. The regions are disjoint and, between them,
+    cover the whole mesh.
+
+    Raises:
+      ValueError: If two regions claim the same quad, or if some quad is
+        claimed by none and so cannot be assigned a tile.
+    """
+    return gnm_udim.quad_tiles(self)
+
+  @property
+  def triangle_udim_tiles(self) -> npt.NDArray[np.int32]:
+    """The UDIM tile number of each triangle, (T,).
+
+    Computed on access from vertex groups without caching. The triangulated
+    equivalent of `quad_udim_tiles`: each triangle lies in the same region as
+    the quad it was split from.
+
+    Raises:
+      ValueError: If two regions claim the same triangle, or if some triangle
+        is claimed by none and so cannot be assigned a tile.
+    """
+    return gnm_udim.triangle_tiles(self)
+
+  @property
+  def quad_uvs_udim(self) -> npt.NDArray[np.floating]:
+    """Per-quad texture coordinates in UDIM layout, (Q, 4, 2).
+
+    Computed on access from vertex groups without caching. Unlike `quad_uvs`,
+    which packs every surface into the unit square so that surfaces overlap,
+    these coordinates place each region of `gnm_udim.UDIM_TILE_REGIONS` in its
+    own tile and therefore span more than the unit square.
+    """
+    return gnm_udim.quad_uvs(self)
+
+  @property
+  def triangle_uvs_udim(self) -> npt.NDArray[np.floating]:
+    """Per-triangle texture coordinates in UDIM layout, (T, 3, 2).
+
+    Computed on access from vertex groups without caching. The triangulated
+    equivalent of `quad_uvs_udim`.
+    """
+    return gnm_udim.triangle_uvs(self)
 
   def compute_vertex_normals(
       self,
