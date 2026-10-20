@@ -140,6 +140,68 @@ class SamplerTest(absltest.TestCase):
     ident2 = self.identity_sampler.sample_identity(gender, ethnicity, rng=None)
     self.assertFalse(np.array_equal(ident1, ident2))
 
+  def test_sampler_initialization_with_explicit_version(self):
+    expression_sampler = semantic_sampler.ExpressionSampler(
+        version=semantic_sampler.GNMMajorVersion.V3
+    )
+    identity_sampler = semantic_sampler.IdentitySampler(
+        version=semantic_sampler.GNMMajorVersion.V3
+    )
+
+    seed = 123
+    expected_expression = self.expression_sampler.sample_expression(
+        semantic_sampler.Expression.HAPPY,
+        rng=np.random.default_rng(seed),
+    )
+    actual_expression = expression_sampler.sample_expression(
+        semantic_sampler.Expression.HAPPY,
+        rng=np.random.default_rng(seed),
+    )
+    np.testing.assert_array_equal(actual_expression, expected_expression)
+
+    expected_identity = self.identity_sampler.sample_identity(
+        semantic_sampler.Gender.FEMALE,
+        semantic_sampler.Ethnicity.WHITE,
+        rng=np.random.default_rng(seed),
+    )
+    actual_identity = identity_sampler.sample_identity(
+        semantic_sampler.Gender.FEMALE,
+        semantic_sampler.Ethnicity.WHITE,
+        rng=np.random.default_rng(seed),
+    )
+    np.testing.assert_array_equal(actual_identity, expected_identity)
+
+  def test_sampler_initialization_with_explicit_decoder_model_path(self):
+    expression_model_path = (
+        semantic_sampler._SEMANTIC_SAMPLER_DIR
+        / 'v3_0'
+        / 'expression_decoder_model.h5'
+    )
+    identity_model_path = (
+        semantic_sampler._SEMANTIC_SAMPLER_DIR
+        / 'v3_0'
+        / 'identity_decoder_model.h5'
+    )
+
+    expression_sampler = semantic_sampler.ExpressionSampler(
+        decoder_model_path=expression_model_path
+    )
+    identity_sampler = semantic_sampler.IdentitySampler(
+        decoder_model_path=identity_model_path
+    )
+
+    generated_expressions = expression_sampler.sample_expression(
+        semantic_sampler.Expression.HAPPY,
+        num_samples=1,
+    )
+    generated_identities = identity_sampler.sample_identity(
+        semantic_sampler.Gender.FEMALE,
+        semantic_sampler.Ethnicity.WHITE,
+        num_samples=1,
+    )
+    self.assertEqual(generated_expressions.shape, (1, self.expression_dim))
+    self.assertEqual(generated_identities.shape, (1, self.identity_dim))
+
 
 if __name__ == '__main__':
   absltest.main()
