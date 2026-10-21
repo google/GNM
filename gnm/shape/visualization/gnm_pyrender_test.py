@@ -24,6 +24,7 @@ from gnm.shape import gnm_numpy
 from gnm.shape import gnm_test_utils
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import gnm_pyrender
+from gnm.shape.visualization import render_common
 import mediapy as media
 import numpy as np
 
@@ -139,6 +140,120 @@ class ChangedFlagTest(absltest.TestCase):
     np.testing.assert_array_equal(
         gnm_pyrender._changed_flag(array), expected_flags
     )
+
+
+class GNMMeshRendererTest(parameterized.TestCase):
+
+  gnms: dict[str, gnm_numpy.GNM]
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.gnms = {
+        version: gnm_numpy.GNM.from_remote(
+            gnm_numpy.GNMMajorVersion(version.removeprefix('v')),
+            gnm_numpy.GNMVariant.HEAD,
+        )
+        for version in _MAINTAINED_MAJOR_GNM_VERSIONS
+    }
+
+  def setUp(self):
+    super().setUp()
+    self.gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
+    self.image_size = (160, 120)
+
+  def test_render_single_frame(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(
+        gnm_np=self.gnm_np,
+        triangles='~eye_exteriors',
+    )
+    output = renderer.render(image_size=self.image_size)
+    self.assertIsInstance(output, render_common.MeshRenderOutput)
+    self.assertEqual(output.image.shape, (120, 160, 3))
+    self.assertEqual(output.alpha.shape, (120, 160, 1))
+    self.assertEqual(output.image.dtype, np.uint8)
+    self.assertEqual(output.alpha.dtype, np.float32)
+    renderer.close()
+    self.assertIsNone(renderer._renderer)
+    self.assertIsNone(renderer._scene)
+
+  def test_render_multi_frame(self):
+    num_frames = 3
+    batched_vertices = np.broadcast_to(
+        self.gnm_np.template_vertex_positions,
+        (num_frames, self.gnm_np.num_vertices, 3),
+    )
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    output = renderer.render(
+        vertices=batched_vertices, image_size=self.image_size
+    )
+    self.assertEqual(output.image.shape, (num_frames, 120, 160, 3))
+    self.assertEqual(output.alpha.shape, (num_frames, 120, 160, 1))
+    renderer.close()
+
+  def test_reuse_offscreen_renderer(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    renderer.render(image_size=self.image_size)
+    first_renderer_instance = renderer._renderer
+    self.assertIsNotNone(first_renderer_instance)
+
+    # Rendering second frame with identical image size reuses the renderer.
+    renderer.render(image_size=self.image_size)
+    self.assertIs(renderer._renderer, first_renderer_instance)
+
+    # Changing image size creates a new renderer.
+    renderer.render(image_size=(80, 60))
+    self.assertIsNot(renderer._renderer, first_renderer_instance)
+    renderer.close()
+    self.assertIsNone(renderer._renderer)
+
+  def test_update_triangles(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    renderer.render(image_size=self.image_size)
+    renderer.update_triangles('skin')
+    self.assertEqual(renderer.triangles, 'skin')
+    output = renderer.render(image_size=self.image_size)
+    self.assertEqual(output.image.shape, (120, 160, 3))
+
+    renderer.update_triangles(('~eye_exteriors', '-teeth'))
+    self.assertEqual(renderer.triangles, ('~eye_exteriors', '-teeth'))
+    output_seq = renderer.render(image_size=self.image_size)
+    self.assertEqual(output_seq.image.shape, (120, 160, 3))
+    renderer.close()
+
+  def test_update_camera(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    world_to_camera = np.eye(4, dtype=np.float32)
+    camera_to_image = np.eye(4, dtype=np.float32)
+    renderer.update_camera(
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=self.image_size,
+    )
+    self.assertEqual(renderer._cached_image_size, self.image_size)
+    renderer.close()
+
+  def test_update_vertices(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    renderer.update_vertices(vertices=self.gnm_np.template_vertex_positions)
+    self.assertIsNotNone(renderer._cached_vertices)
+    self.assertIsNotNone(renderer._cached_normals)
+    renderer.close()
+
+  def test_composite(self):
+    renderer = gnm_pyrender.GNMMeshRenderer(gnm_np=self.gnm_np)
+    output = renderer.render(image_size=self.image_size)
+    composited_default = output.composite()
+    self.assertEqual(composited_default.shape, (120, 160, 3))
+    self.assertEqual(composited_default.dtype, np.uint8)
+
+    background_image = np.full((120, 160, 3), 128, dtype=np.uint8)
+    composited_custom = output.composite(
+        background_image=background_image, alpha=0.8
+    )
+    self.assertEqual(composited_custom.shape, (120, 160, 3))
+    self.assertEqual(composited_custom.dtype, np.uint8)
+    renderer.close()
 
 
 if __name__ == '__main__':
