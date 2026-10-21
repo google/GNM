@@ -38,17 +38,41 @@ Usage:
 from collections.abc import Mapping
 import enum
 from etils import epath
+from gnm.shape.data.versions import gnm_specs
+import immutabledict
 import numpy as np
 import tensorflow as tf
 
+GNMMajorVersion = gnm_specs.GNMMajorVersion
+
 _pkg = __package__ or 'gnm.shape'
 _DATA_DIR = epath.resource_path(_pkg) / 'data'
-_EXPRESSION_DECODER_PATH = (
-    _DATA_DIR / 'semantic_sampler' / 'expression_decoder_model.h5'
+_SEMANTIC_SAMPLER_DIR = _DATA_DIR / 'semantic_sampler'
+_EXPRESSION_DECODER_FILENAME = 'expression_decoder_model.h5'
+_IDENTITY_DECODER_FILENAME = 'identity_decoder_model.h5'
+_VERSION_TO_DIRECTORY_MAP: Mapping[GNMMajorVersion, str] = (
+    immutabledict.immutabledict({
+        GNMMajorVersion.V3: 'v3_0',
+    })
 )
-_IDENTITY_DECODER_PATH = (
-    _DATA_DIR / 'semantic_sampler' / 'identity_decoder_model.h5'
-)
+
+
+def _get_decoder_model_path(
+    version: GNMMajorVersion,
+    filename: str,
+) -> epath.Path:
+  """Returns the default decoder model path for the given GNM major version."""
+  version_directory = _VERSION_TO_DIRECTORY_MAP.get(version)
+  if version_directory is None:
+    supported_versions = ', '.join(
+        supported_version.name
+        for supported_version in _VERSION_TO_DIRECTORY_MAP
+    )
+    raise ValueError(
+        f'Unsupported semantic sampler version: {version!r}. Supported'
+        f' versions are: {supported_versions}.'
+    )
+  return _SEMANTIC_SAMPLER_DIR / version_directory / filename
 
 
 class Gender(enum.IntEnum):
@@ -102,21 +126,28 @@ class ExpressionSampler:
 
   def __init__(
       self,
-      decoder_model_path: str | None = None,
+      decoder_model_path: epath.PathLike | None = None,
+      version: GNMMajorVersion = GNMMajorVersion.V3,
       verbose: bool = False,
   ) -> None:
-    """Initializes the ExpressionSampler class.
+    """Initializes the instance.
 
     Loads the decoder model and stores parameters.
 
     Args:
       decoder_model_path: Path to the saved decoder model file. If None, the
-        default model is loaded.
+        default model for the specified `version` is loaded.
+      version: The GNM major version of the default decoder model to load when
+        `decoder_model_path` is None.
       verbose: If True, prints a summary of the loaded decoder model.
+
+    Raises:
+      ValueError: If `decoder_model_path` is None and `version` is not
+        supported.
     """
     if decoder_model_path is None:
-      decoder_model_path = (
-          _EXPRESSION_DECODER_PATH  # pyrefly: ignore[bad-assignment]
+      decoder_model_path = _get_decoder_model_path(
+          version, _EXPRESSION_DECODER_FILENAME
       )
     self._decoder = tf.keras.models.load_model(str(decoder_model_path))
     self._expression_names = tuple(member.name.lower() for member in Expression)
@@ -338,23 +369,30 @@ class IdentitySampler:
 
   def __init__(
       self,
-      decoder_model_path: str | None = None,
+      decoder_model_path: epath.PathLike | None = None,
+      version: GNMMajorVersion = GNMMajorVersion.V3,
       verbose: bool = False,
   ) -> None:
-    """Initializes the IdentitySampler class.
+    """Initializes the instance.
 
     Loads the decoder model and stores parameters.
 
     Args:
       decoder_model_path: Path to the saved identity decoder model file. If
-        None, the default model is loaded.
+        None, the default model for the specified `version` is loaded.
+      version: The GNM major version of the default decoder model to load when
+        `decoder_model_path` is None.
       verbose: If True, prints a summary of the loaded decoder model.
+
+    Raises:
+      ValueError: If `decoder_model_path` is None and `version` is not
+        supported.
     """
     if decoder_model_path is None:
-      decoder_model_path = (
-          _IDENTITY_DECODER_PATH  # pyrefly: ignore[bad-assignment]
+      decoder_model_path = _get_decoder_model_path(
+          version, _IDENTITY_DECODER_FILENAME
       )
-    self._decoder = tf.keras.models.load_model(decoder_model_path)
+    self._decoder = tf.keras.models.load_model(str(decoder_model_path))
 
     self._condition_dim = self._decoder.inputs[1].shape[-1]
     if verbose:
