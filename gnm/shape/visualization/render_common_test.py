@@ -528,5 +528,291 @@ class TestRenderGNMMesh(parameterized.TestCase):
     self.assertEqual(res.shape, (3, 4, 48, 64, 3))
 
 
+class TestMeshRenderOutput(parameterized.TestCase):
+  """Tests for MeshRenderOutput dataclass and compositing."""
+
+  def test_composite_with_default_background(self):
+    """Tests compositing with default solid background."""
+    image = np.full((10, 20, 3), 200, dtype=np.uint8)
+    alpha = np.ones((10, 20, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    composited = output.composite()
+    self.assertEqual(composited.shape, (10, 20, 3))
+    self.assertEqual(composited.dtype, np.uint8)
+    # With alpha=1.0, foreground should match exactly.
+    np.testing.assert_array_equal(composited, image)
+
+    # With alpha=0.0, background should match DEFAULT_BACKGROUND_COLOR (0.95).
+    composited_background = output.composite(alpha=0.0)
+    expected_background = int(render_common.DEFAULT_BACKGROUND_COLOR[0] * 255.0)
+    np.testing.assert_allclose(
+        composited_background, expected_background, atol=1
+    )
+
+  def test_composite_with_custom_background(self):
+    """Tests compositing with custom background image and 1D uint8 RGB color."""
+    image = np.full((12, 16, 3), 255, dtype=np.uint8)
+    alpha = np.zeros((12, 16, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    background = np.full((12, 16, 3), 50, dtype=np.uint8)
+    composited = output.composite(background=background)
+    self.assertEqual(composited.shape, (12, 16, 3))
+    # With alpha=0.0, output should match background.
+    np.testing.assert_array_equal(composited, background)
+
+    # 1D uint8 RGB background color array is normalized to [0, 1] before blend.
+    background_color_uint8 = np.array([255, 128, 0], dtype=np.uint8)
+    composited_1d_uint8 = output.composite(background=background_color_uint8)
+    expected_1d_uint8 = np.broadcast_to(background_color_uint8, (12, 16, 3))
+    np.testing.assert_allclose(composited_1d_uint8, expected_1d_uint8, atol=1)
+
+  def test_composite_with_alpha_scaling(self):
+    """Tests compositing with alpha=0.5 scaling."""
+    image = np.full((4, 4, 3), 200, dtype=np.uint8)
+    alpha = np.ones((4, 4, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    background = np.full((4, 4, 3), 100, dtype=np.uint8)
+    composited = output.composite(background=background, alpha=0.5)
+    # Expected: 200 * 0.5 + 100 * 0.5 = 150
+    np.testing.assert_allclose(composited, 150, atol=1)
+
+  def test_composite_float_dtype_with_colors_and_images(self):
+    """Tests composite with dtype=np.float32 for colors, images, and errors."""
+    image = np.full((10, 20, 3), 255, dtype=np.uint8)
+    alpha = np.ones((10, 20, 1), dtype=np.float32)
+    output = render_common.MeshRenderOutput(image=image, alpha=alpha)
+
+    # Default background color with alpha=1.0.
+    composited_default = output.composite(dtype=np.float32)
+    self.assertEqual(composited_default.shape, (10, 20, 3))
+    self.assertEqual(composited_default.dtype, np.float32)
+    np.testing.assert_allclose(composited_default, 1.0, atol=1e-5)
+
+    # Default background color with alpha=0.0.
+    composited_background = output.composite(alpha=0.0, dtype=np.float32)
+    np.testing.assert_allclose(
+        composited_background,
+        np.broadcast_to(render_common.DEFAULT_BACKGROUND_COLOR, (10, 20, 3)),
+        atol=1e-5,
+    )
+
+    # Float32 background image.
+    background_float = np.full((10, 20, 3), 0.25, dtype=np.float32)
+    composited_float = output.composite(
+        background=background_float, alpha=0.5, dtype=np.float32
+    )
+    # Expected: 1.0 * 0.5 + 0.25 * 0.5 = 0.625
+    np.testing.assert_allclose(composited_float, 0.625, atol=1e-5)
+
+    # UInt8 background image.
+    background_uint8 = np.full((10, 20, 3), 51, dtype=np.uint8)
+    composited_uint8 = output.composite(
+        background=background_uint8, alpha=0.0, dtype=np.float32
+    )
+    np.testing.assert_allclose(composited_uint8, 51.0 / 255.0, atol=1e-5)
+
+    # Batched background image.
+    batched_image = np.full((2, 10, 20, 3), 255, dtype=np.uint8)
+    batched_alpha = np.ones((2, 10, 20, 1), dtype=np.float32)
+    batched_output = render_common.MeshRenderOutput(
+        image=batched_image, alpha=batched_alpha
+    )
+    batched_background = np.zeros((2, 10, 20, 3), dtype=np.float32)
+    composited_batched = batched_output.composite(
+        background=batched_background, alpha=0.5, dtype=np.float32
+    )
+    self.assertEqual(composited_batched.shape, (2, 10, 20, 3))
+    np.testing.assert_allclose(composited_batched, 0.5, atol=1e-5)
+
+    # Incompatible batch dimensions.
+    incompatible_background = np.zeros((3, 10, 20, 3), dtype=np.float32)
+    with self.assertRaisesRegex(ValueError, 'Batch dimensions incompatible'):
+      batched_output.composite(
+          background=incompatible_background, dtype=np.float32
+      )
+
+    # Invalid dtype.
+    with self.assertRaisesRegex(ValueError, 'Unsupported output dtype'):
+      output.composite(dtype=np.int32)
+
+
+class TestResolveGNMTriangles(parameterized.TestCase):
+  """Tests for resolve_gnm_triangles."""
+
+  gnm_np: gnm_numpy.GNM
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.gnm_np = _load_head_gnms()[
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+    ]
+
+  def test_group_string_input(self):
+    """Tests resolving group string expression."""
+    expected_indices = self.gnm_np.triangle_indices_for_group('~eye_exteriors')
+    selected_triangles, selected_triangle_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, '~eye_exteriors')
+    )
+    self.assertEqual(selected_triangles.dtype, np.int32)
+    self.assertEqual(selected_triangle_uvs.dtype, np.float32)
+    self.assertEqual(selected_triangles.shape, (len(expected_indices), 3))
+    self.assertEqual(selected_triangle_uvs.shape, (len(expected_indices), 3, 2))
+    np.testing.assert_array_equal(
+        selected_triangles, self.gnm_np.triangles[expected_indices]
+    )
+    np.testing.assert_allclose(
+        selected_triangle_uvs, self.gnm_np.triangle_uvs_udim[expected_indices]
+    )
+
+  def test_sequence_of_groups_input(self):
+    """Tests resolving sequence of group expressions."""
+    group_names = ('skin', '-left_eye')
+    expected_indices = self.gnm_np.triangle_indices_for_group(*group_names)
+    selected_triangles, selected_triangle_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, group_names)
+    )
+    self.assertEqual(selected_triangles.dtype, np.int32)
+    self.assertEqual(selected_triangle_uvs.dtype, np.float32)
+    self.assertEqual(selected_triangles.shape, (len(expected_indices), 3))
+    self.assertEqual(selected_triangle_uvs.shape, (len(expected_indices), 3, 2))
+    np.testing.assert_array_equal(
+        selected_triangles, self.gnm_np.triangles[expected_indices]
+    )
+    np.testing.assert_allclose(
+        selected_triangle_uvs, self.gnm_np.triangle_uvs_udim[expected_indices]
+    )
+
+  def test_face_indices_array_input(self):
+    """Tests resolving 1D face indices array."""
+    face_indices = np.array([0, 1, 2], dtype=np.int32)
+    selected_triangles, selected_triangle_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, face_indices)
+    )
+    self.assertEqual(selected_triangles.dtype, np.int32)
+    self.assertEqual(selected_triangle_uvs.dtype, np.float32)
+    self.assertEqual(selected_triangles.shape, (3, 3))
+    self.assertEqual(selected_triangle_uvs.shape, (3, 3, 2))
+    np.testing.assert_array_equal(
+        selected_triangles, self.gnm_np.triangles[face_indices]
+    )
+    np.testing.assert_allclose(
+        selected_triangle_uvs, self.gnm_np.triangle_uvs_udim[face_indices]
+    )
+
+
+class TestNormalizeTextures(parameterized.TestCase):
+  """Tests for _normalize_textures."""
+
+  def test_bare_array_maps_to_skin_udim_tile(self):
+    """Tests that a single image array maps to SKIN_UDIM_TILE."""
+    image = np.zeros((32, 32, 3), dtype=np.uint8)
+    normalized = render_common._normalize_textures(
+        image, tiles=[int(render_common.SKIN_UDIM_TILE)]
+    )
+    self.assertIn(int(render_common.SKIN_UDIM_TILE), normalized)
+    np.testing.assert_array_equal(
+        normalized[int(render_common.SKIN_UDIM_TILE)], image
+    )
+
+  def test_mapping_with_udim_tile_keys(self):
+    """Tests that mapping with UdimTile keys converts keys to int."""
+    image = np.zeros((16, 16, 3), dtype=np.uint8)
+    mapping = {gnm_udim.UdimTile.SKIN: image}
+    normalized = render_common._normalize_textures(
+        mapping, tiles=[int(gnm_udim.UdimTile.SKIN)]
+    )
+    self.assertIn(int(gnm_udim.UdimTile.SKIN), normalized)
+    np.testing.assert_array_equal(
+        normalized[int(gnm_udim.UdimTile.SKIN)], image
+    )
+
+  def test_missing_tile_filled_with_white(self):
+    """Tests that missing tiles in tiles sequence are filled with white."""
+    normalized = render_common._normalize_textures(None, tiles=[1001, 1002])
+    self.assertIn(1001, normalized)
+    self.assertIn(1002, normalized)
+    self.assertEqual(normalized[1001].shape, (1, 1, 3))
+    self.assertEqual(normalized[1001].dtype, np.uint8)
+    np.testing.assert_array_equal(
+        normalized[1001], np.full((1, 1, 3), 255, dtype=np.uint8)
+    )
+    np.testing.assert_array_equal(
+        normalized[1002], np.full((1, 1, 3), 255, dtype=np.uint8)
+    )
+
+
+class TestResolveGNMCameraAndVertices(parameterized.TestCase):
+  """Tests for resolve_gnm_camera_and_vertices."""
+
+  gnm_np: gnm_numpy.GNM
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.gnm_np = _load_head_gnms()[
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+    ]
+
+  def test_defaults(self):
+    """Tests default resolution using GNM template vertices and cameras."""
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(self.gnm_np)
+    )
+    self.assertEqual(
+        vertices.shape, self.gnm_np.template_vertex_positions.shape
+    )
+    self.assertEqual(world_to_camera.shape, (4, 4))
+    self.assertEqual(camera_to_image.shape, (4, 4))
+    self.assertEqual(vertices.dtype, np.float32)
+    self.assertEqual(world_to_camera.dtype, np.float32)
+    self.assertEqual(camera_to_image.dtype, np.float32)
+
+  def test_explicit_arguments(self):
+    """Tests passing explicit vertices and camera matrices."""
+    explicit_vertices = np.zeros((10, 3), dtype=np.float32)
+    explicit_world_to_camera = np.eye(4, dtype=np.float32)
+    explicit_camera_to_image = np.eye(4, dtype=np.float32)
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np,
+            vertices=explicit_vertices,
+            world_to_camera=explicit_world_to_camera,
+            camera_to_image=explicit_camera_to_image,
+        )
+    )
+    np.testing.assert_array_equal(vertices, explicit_vertices)
+    np.testing.assert_array_equal(world_to_camera, explicit_world_to_camera)
+    np.testing.assert_array_equal(camera_to_image, explicit_camera_to_image)
+
+  def test_multiple_gnms_error(self):
+    """Tests that multiple_gnms=True with 2D vertices raises ValueError."""
+    with self.assertRaisesRegex(ValueError, 'Called with multiple_gnms=True'):
+      render_common.resolve_gnm_camera_and_vertices(
+          self.gnm_np,
+          vertices=np.zeros((10, 3), dtype=np.float32),
+          multiple_gnms=True,
+      )
+
+  def test_multiple_gnms_success(self):
+    """Tests multiple_gnms=True with 3D vertices."""
+    template_vertices = self.gnm_np.template_vertex_positions
+    num_vertices = template_vertices.shape[0]
+    vertices_3d = np.broadcast_to(template_vertices, (2, num_vertices, 3))
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np,
+            vertices=vertices_3d,
+            multiple_gnms=True,
+        )
+    )
+    self.assertEqual(vertices.shape, (2, num_vertices, 3))
+    self.assertEqual(world_to_camera.shape, (4, 4))
+    self.assertEqual(camera_to_image.shape, (4, 4))
+
+
 if __name__ == '__main__':
   absltest.main()
