@@ -38,10 +38,12 @@ from absl import logging
 from etils import enp
 from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
+from gnm.shape import gnm_typing
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
 import numpy as np
-import numpy.typing as npt
+
+enpt = gnm_typing.enpt
 
 GNMVersion = gnm_specs.GNMVersion
 GNMMajorVersion = gnm_specs.GNMMajorVersion
@@ -52,6 +54,60 @@ GNMLandmarksType = gnm_landmarks.GNMLandmarksType
 GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 _rotation_matrix = gnm_common.axis_angle_to_rotation_matrix
+
+
+def compute_vertex_normals(
+    vertices: enpt.FloatArray['... V 3'],
+    triangles: enpt.IntArray['T 3'],
+) -> enpt.FloatArray['... V 3']:
+  """Computes area-weighted unit vertex normals for a triangle mesh.
+
+  Note: Zero-magnitude normal warnings are checked only across vertices
+  referenced by `triangles` so that passing a subset of mesh faces (such as
+  `'~eye_exteriors'`) does not warn on unreferenced vertices.
+
+  Args:
+    vertices: Vertex positions with shape `(..., V, 3)`.
+    triangles: Triangle face vertex indices with shape `(T, 3)`.
+
+  Returns:
+    Vertex normals with shape `(..., V, 3)`.
+  """
+  if triangles.shape[0] == 0:
+    return np.zeros_like(vertices)
+
+  batch_dims = vertices.shape[:-2]
+  num_vertices = vertices.shape[-2]
+  vertices = vertices.reshape(-1, num_vertices, 3)
+
+  face_vertices = vertices[:, triangles, :]
+  vertex_0 = face_vertices[..., 0, :]
+  vertex_1 = face_vertices[..., 1, :]
+  vertex_2 = face_vertices[..., 2, :]
+  face_normals_area = np.cross(
+      vertex_1 - vertex_0, vertex_2 - vertex_0, axis=-1
+  )
+
+  vertex_normals = np.zeros_like(vertices)
+  np.add.at(
+      vertex_normals,
+      (  # pyrefly: ignore[bad-argument-type]
+          slice(None),
+          triangles,
+          slice(None),
+      ),
+      face_normals_area[:, :, np.newaxis, :],
+  )
+
+  normal_magnitudes = np.linalg.norm(vertex_normals, axis=-1, keepdims=True)
+  referenced_vertices = np.unique(triangles)
+  if np.any(np.isclose(normal_magnitudes[:, referenced_vertices], 0.0)):
+    logging.warning(
+        'Some vertex normals have zero magnitude. This is unexpected and'
+        ' likely indicates triangle collapse.'
+    )
+  vertex_normals = vertex_normals / np.maximum(normal_magnitudes, 1e-8)
+  return vertex_normals.reshape(*batch_dims, num_vertices, 3)
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
@@ -128,8 +184,8 @@ class GNM(gnm_xnp.GNM):
 
   def compute_vertex_normals(
       self,
-      vertices: npt.NDArray[np.floating],
-  ) -> npt.NDArray[np.floating]:
+      vertices: enpt.FloatArray['... V 3'],
+  ) -> enpt.FloatArray['... V 3']:
     """Compute vertex normals for GNM mesh.
 
     Args:
@@ -138,32 +194,4 @@ class GNM(gnm_xnp.GNM):
     Returns:
       Vertex normals with shape `(..., V, 3)`.
     """
-    batch_dims = vertices.shape[:-2]
-    num_vertices = vertices.shape[-2]
-    vertices_flat = vertices.reshape(-1, num_vertices, 3)
-
-    face_vertices = vertices_flat[:, self.triangles, :]
-    v0 = face_vertices[..., 0, :]
-    v1 = face_vertices[..., 1, :]
-    v2 = face_vertices[..., 2, :]
-    face_normals_area = np.cross(v1 - v0, v2 - v0, axis=-1)
-
-    vertex_normals = np.zeros_like(vertices_flat)
-    np.add.at(
-        vertex_normals,
-        (  # pyrefly: ignore[bad-argument-type]
-            slice(None),
-            self.triangles,
-            slice(None),
-        ),
-        face_normals_area[:, :, None, :],
-    )
-
-    normal_magnitudes = np.linalg.norm(vertex_normals, axis=-1, keepdims=True)
-    if np.any(np.isclose(normal_magnitudes, 0.0)):
-      logging.warning(
-          'Some vertex normals have zero magnitude. This is unexpected and'
-          ' likely indicates triangle collapse.'
-      )
-    vertex_normals = vertex_normals / np.maximum(normal_magnitudes, 1e-8)
-    return vertex_normals.reshape(batch_dims + (num_vertices, 3))
+    return compute_vertex_normals(vertices, self.triangles)

@@ -105,9 +105,7 @@ def get_pose_correctives_test_cases(gnm_np: gnm_numpy.GNM):
       gnm_np.num_vertices, 3
   )
   test_cases.append({
-      'pose_correctives_regressor': (
-          pose_correctives_regressor.T
-      ),
+      'pose_correctives_regressor': pose_correctives_regressor.T,
       'rotations': rotations,
       'expected_pose_correctives': expected_pose_correctives,
   })
@@ -867,9 +865,7 @@ class GNMNumpyTest(parameterized.TestCase):
     self.assertEmpty(gnm.vertex_group_indices('left', '-left'))
     np.testing.assert_equal(gnm.vertex_group_mask('~left', 'left'), True)
     np.testing.assert_equal(gnm.vertex_group_mask('left', '~left'), True)
-    neg_mask = ~gnm.vertex_group_mask(
-        'left'
-    )
+    neg_mask = ~gnm.vertex_group_mask('left')
     np.testing.assert_equal(
         gnm.vertex_group_mask('~left'),
         neg_mask,
@@ -1143,6 +1139,40 @@ class GNMNumpyTest(parameterized.TestCase):
     with self.assertLogs(level='WARNING') as log_output:
       gnm_np.compute_vertex_normals(vertices)
     self.assertIn('zero magnitude', log_output.output[0])
+
+  def test_compute_vertex_normals_standalone_and_subset(self):
+    """Tests compute_vertex_normals with empty triangles and subset of faces."""
+    # Empty triangles returns zeros without error.
+    vertices = np.ones((5, 3), dtype=np.float32)
+    empty_triangles = np.empty((0, 3), dtype=np.int32)
+    empty_normals = gnm_numpy.compute_vertex_normals(vertices, empty_triangles)
+    self.assertEqual(empty_normals.shape, (5, 3))
+    np.testing.assert_array_equal(
+        empty_normals, np.zeros((5, 3), dtype=np.float32)
+    )
+
+    # Subset of triangles: unreferenced vertices receive zero normal and
+    # no warning.
+    gnm_np = self.gnms.get_or_skip(
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0], 'head'
+    )
+    all_vertices = gnm_np.template_vertex_positions
+    subset_triangles = gnm_np.triangles[:10]
+    referenced_vertices = np.unique(subset_triangles)
+    unreferenced_mask = np.ones(all_vertices.shape[0], dtype=bool)
+    unreferenced_mask[referenced_vertices] = False
+
+    with self.assertNoLogs(level='WARNING'):
+      normals = gnm_numpy.compute_vertex_normals(all_vertices, subset_triangles)
+
+    np.testing.assert_array_equal(
+        normals[unreferenced_mask],
+        np.zeros((np.sum(unreferenced_mask), 3), dtype=np.float32),
+    )
+    referenced_magnitudes = np.linalg.norm(
+        normals[referenced_vertices], axis=-1
+    )
+    np.testing.assert_allclose(referenced_magnitudes, 1.0, atol=1e-5)
 
   @parameterized.product(
       _BENCHMARK_CONFIGS,
