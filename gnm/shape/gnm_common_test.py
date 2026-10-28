@@ -150,6 +150,66 @@ class AxisAngleToRotationMatrixTest(parameterized.TestCase):
     self.assertEqual(tuple(matrices.shape), (2, 4, 3, 3))
 
 
+class RotationMatrixToAxisAnglesTest(parameterized.TestCase):
+  """Tests for rotation_matrix_to_axis_angles."""
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_identity_returns_zero(self, xnp: enp.NpModule):
+    matrix = xnp.asarray(np.eye(3), dtype=xnp.float32)
+    axis_angle = np.asarray(
+        gnm_common.rotation_matrix_to_axis_angles(matrix)
+    )
+    np.testing.assert_allclose(axis_angle, np.zeros(3), atol=1e-5)
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_ninety_degrees_about_z(self, xnp: enp.NpModule):
+    matrix = xnp.asarray(
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=xnp.float32,
+    )
+    axis_angle = np.asarray(
+        gnm_common.rotation_matrix_to_axis_angles(matrix)
+    )
+    expected = np.array([0.0, 0.0, np.pi / 2], dtype=np.float32)
+    np.testing.assert_allclose(axis_angle, expected, atol=1e-5)
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_preserves_batch_shape(self, xnp: enp.NpModule):
+    matrices = xnp.asarray(
+        np.broadcast_to(np.eye(3), (2, 4, 3, 3)), dtype=xnp.float32
+    )
+    axis_angles = gnm_common.rotation_matrix_to_axis_angles(matrices)
+    self.assertEqual(tuple(axis_angles.shape), (2, 4, 3))
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_roundtrip(self, xnp: enp.NpModule):
+    rng = np.random.default_rng(0)
+    # Generate random rotation vectors with angle in [0, pi - 0.05]
+    axis = rng.normal(size=(10, 3))
+    axis = axis / np.linalg.norm(axis, axis=-1, keepdims=True)
+    angle = rng.uniform(0.01, np.pi - 0.05, size=(10, 1))
+    axis_angle_np = (axis * angle).astype(np.float32)
+
+    axis_angle_xnp = xnp.asarray(axis_angle_np, dtype=xnp.float32)
+    matrices = gnm_common.axis_angle_to_rotation_matrix(axis_angle_xnp)
+    recovered_axis_angle = np.asarray(
+        gnm_common.rotation_matrix_to_axis_angles(matrices)
+    )
+
+    np.testing.assert_allclose(
+        recovered_axis_angle, axis_angle_np, atol=1e-5
+    )
+
+    recovered_matrices = np.asarray(
+        gnm_common.axis_angle_to_rotation_matrix(
+            xnp.asarray(recovered_axis_angle, dtype=xnp.float32)
+        )
+    )
+    np.testing.assert_allclose(
+        recovered_matrices, np.asarray(matrices), atol=1e-5
+    )
+
+
 class JointTransformsWorldTest(parameterized.TestCase):
   """Tests for the forward-kinematics joint transforms."""
 
