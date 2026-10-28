@@ -17,9 +17,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gnm-shape"
+name = "gnm"
 version = "3.0.0"
-description = "GNM Shape Library"
+description = "GNM: Generative aNthropometric Model"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
@@ -56,7 +56,7 @@ mitsuba = [
     "mitsuba",
 ]
 all = [
-    "gnm-shape[jax,pytorch,mitsuba]",
+    "gnm[jax,pytorch,mitsuba]",
 ]
 dev = [
     "pytest",
@@ -66,6 +66,7 @@ dev = [
 
 [tool.setuptools]
 packages = [
+    "gnm",
     "gnm.shape",
     "gnm.shape.data",
     "gnm.shape.data.versions",
@@ -74,7 +75,6 @@ packages = [
     "gnm.shape.visualization",
     "gnm.shape.visualization.integrators",
 ]
-package-dir = {"gnm.shape" = "."}
 
 [tool.setuptools.package-data]
 "gnm.shape" = [
