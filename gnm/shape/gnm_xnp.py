@@ -30,20 +30,17 @@ from gnm.shape import gnm_base
 from gnm.shape import gnm_common
 from gnm.shape import gnm_data_schema
 from gnm.shape import gnm_landmarks
-from gnm.shape import gnm_typing
 from gnm.shape import gnm_udim
 from gnm.shape.data.versions import gnm_specs
+import jaxtyping as jt
 import numpy as np
-import numpy.typing as npt
-
-enpt = gnm_typing.enpt
 
 _NONZERO_THRESHOLD = 1e-4
 _EPSILON = 1e-8
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
-class GNM(gnm_base.GNMBase):
+class GNM[ArrayT: Any](gnm_base.GNMBase):
   """Backend-agnostic implementation of the GNM parametric model.
 
   This class is abstract. Use a concrete backend subclass (gnm_numpy.GNM,
@@ -116,26 +113,26 @@ class GNM(gnm_base.GNMBase):
 
   version: gnm_specs.GNMVersion
   variant: gnm_specs.GNMVariant
-  template_vertex_positions: enpt.FloatArray
-  template_joint_positions: enpt.FloatArray
-  vertex_identity_basis: enpt.FloatArray
-  joint_identity_basis: enpt.FloatArray
-  expression_basis: enpt.FloatArray
+  template_vertex_positions: jt.Float[ArrayT, 'V 3']
+  template_joint_positions: jt.Float[ArrayT, 'J 3']
+  vertex_identity_basis: jt.Float[ArrayT, 'I V 3']
+  joint_identity_basis: jt.Float[ArrayT, 'I J 3']
+  expression_basis: jt.Float[ArrayT, 'E V 3']
   identity_names: Sequence[str]
   joint_names: Sequence[str]
   expression_names: Sequence[str]
   joint_parent_indices: Sequence[int]
-  skinning_weights: enpt.FloatArray
-  quads: enpt.IntArray
-  triangles: enpt.IntArray
-  quad_uvs: enpt.FloatArray
-  triangle_uvs: enpt.FloatArray
+  skinning_weights: jt.Float[ArrayT, 'J V']
+  quads: jt.Int[ArrayT, 'Q 4']
+  triangles: jt.Int[ArrayT, 'T 3']
+  quad_uvs: jt.Float[ArrayT, 'Q 4 2']
+  triangle_uvs: jt.Float[ArrayT, 'T 3 2']
   mesh_component_names: Sequence[str]
-  mirror_indices: enpt.IntArray
-  joint_regressor: enpt.FloatArray
-  pose_correctives_regressor: enpt.FloatArray
-  bone_aligned_template_joint_orientations: enpt.FloatArray
-  vertex_groups: enpt.FloatArray
+  mirror_indices: jt.Int[ArrayT, 'V']
+  joint_regressor: jt.Float[ArrayT, 'J V']
+  pose_correctives_regressor: jt.Float[ArrayT, '9*J 3*V'] | None
+  bone_aligned_template_joint_orientations: jt.Float[ArrayT, 'J 3 3']
+  vertex_groups: jt.Float[ArrayT, 'G V']
   vertex_group_names: Sequence[str]
 
   def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -154,8 +151,8 @@ class GNM(gnm_base.GNMBase):
     self._landmarks: dict[
         gnm_landmarks.GNMLandmarksType,
         tuple[
-            enpt.IntArray,
-            enpt.FloatArray,
+            jt.Int[ArrayT, '...'],
+            jt.Float[ArrayT, '...'],
         ],
     ] = {}
 
@@ -276,10 +273,10 @@ class GNM(gnm_base.GNMBase):
 
   def _check_parameter_shapes(
       self,
-      identity: enpt.FloatArray['...'] | None = None,
-      expression: enpt.FloatArray['...'] | None = None,
-      rotations: enpt.FloatArray['...'] | None = None,
-      translation: enpt.FloatArray['...'] | None = None,
+      identity: jt.Float[ArrayT, '...'] | None = None,
+      expression: jt.Float[ArrayT, '...'] | None = None,
+      rotations: jt.Float[ArrayT, '...'] | None = None,
+      translation: jt.Float[ArrayT, '...'] | None = None,
   ) -> None:
     error_type = self._shape_error_type
     if identity is not None:
@@ -314,14 +311,13 @@ class GNM(gnm_base.GNMBase):
             f' {translation.shape}'
         )
 
-  @enp.check_and_normalize_arrays(strict=False)
   def __call__(
       self,
-      identity: enpt.FloatArray['A1 ... An I'] | None = None,
-      expression: enpt.FloatArray['A1 ... An E'] | None = None,
-      rotations: enpt.FloatArray['A1 ... An J 3'] | None = None,
-      translation: enpt.FloatArray['A1 ... An 3'] | None = None,
-  ) -> enpt.FloatArray['A1 ... An V 3']:
+      identity: jt.Float[ArrayT, '... I'] | None = None,
+      expression: jt.Float[ArrayT, '... E'] | None = None,
+      rotations: jt.Float[ArrayT, '... J 3'] | None = None,
+      translation: jt.Float[ArrayT, '... 3'] | None = None,
+  ) -> jt.Float[ArrayT, '... V 3']:
     """Evaluates the GNM mesh-generating function."""
     self._check_parameter_shapes(identity, expression, rotations, translation)
     batch_shape = _check_batch_dims(
@@ -370,17 +366,16 @@ class GNM(gnm_base.GNMBase):
 
     return self.vertex_positions_world(vertices, joints, rotations, translation)
 
-  @enp.check_and_normalize_arrays(strict=False)
   def vertices_and_landmarks(
       self,
       landmarks_type: gnm_landmarks.GNMLandmarksType,
-      identity: enpt.FloatArray['A1 ... An I'] | None = None,
-      expression: enpt.FloatArray['A1 ... An E'] | None = None,
-      rotations: enpt.FloatArray['A1 ... An J 3'] | None = None,
-      translation: enpt.FloatArray['A1 ... An 3'] | None = None,
+      identity: jt.Float[ArrayT, '... I'] | None = None,
+      expression: jt.Float[ArrayT, '... E'] | None = None,
+      rotations: jt.Float[ArrayT, '... J 3'] | None = None,
+      translation: jt.Float[ArrayT, '... 3'] | None = None,
   ) -> tuple[
-      enpt.FloatArray['A1 ... An V 3'],
-      enpt.FloatArray['A1 ... An L 3'],
+      jt.Float[ArrayT, '... V 3'],
+      jt.Float[ArrayT, '... L 3'],
   ]:
     """Evaluates the GNM mesh function and extracts 3D landmarks."""
     gnm_landmarks.check_body_part_compatibility(landmarks_type, self.body_part)
@@ -406,11 +401,11 @@ class GNM(gnm_base.GNMBase):
 
   def vertex_positions_world(
       self,
-      vertices: enpt.FloatArray['A1 ... An V 3'],
-      joints: enpt.FloatArray['A1 ... An J 3'],
-      rotations: enpt.FloatArray['A1 ... An J 3'],
-      translation: enpt.FloatArray['A1 ... An 3'],
-  ) -> enpt.FloatArray['A1 ... An V 3']:
+      vertices: jt.Float[ArrayT, '... V 3'],
+      joints: jt.Float[ArrayT, '... J 3'],
+      rotations: jt.Float[ArrayT, '... J 3'],
+      translation: jt.Float[ArrayT, '... 3'],
+  ) -> jt.Float[ArrayT, '... V 3']:
     """Applies linear blend skinning to GNM vertices."""
     return gnm_common.linear_blend_skinning(
         local_vertices=vertices,
@@ -440,7 +435,7 @@ class GNM(gnm_base.GNMBase):
     return self.expression_basis.shape[0]
 
   @functools.cached_property
-  def edge_list(self) -> npt.NDArray[np.integer]:
+  def edge_list(self) -> jt.Int[np.ndarray, 'num_edges 2']:
     """The quad topology represented as a list of directed edges."""
     quads = np.array(self.quads)
     e1 = quads.ravel()
@@ -454,7 +449,7 @@ class GNM(gnm_base.GNMBase):
     )
 
   @functools.cached_property
-  def joint_connections(self) -> npt.NDArray[np.int32]:
+  def joint_connections(self) -> jt.Int32[np.ndarray, 'num_bones 2']:
     """The bones of the GNM rig."""
     return np.stack(
         [
@@ -474,7 +469,7 @@ class GNM(gnm_base.GNMBase):
     return dict(children)
 
   @functools.cached_property
-  def vertex_uvs(self) -> npt.NDArray[np.floating]:
+  def vertex_uvs(self) -> jt.Float[np.ndarray, 'V 2']:
     """Per-vertex UV texture coordinates."""
     logging.warning(
         'These do not allow correct texturing across UV-seams. Please use '
@@ -493,7 +488,7 @@ class GNM(gnm_base.GNMBase):
   def add_vertex_group(
       self,
       name: str,
-      value: enpt.FloatArray['V'],  # pyrefly: ignore[unknown-name]
+      value: jt.Float[ArrayT, 'V'],
   ) -> None:
     """Adds a new vertex group.
 
@@ -516,17 +511,14 @@ class GNM(gnm_base.GNMBase):
     self._vertex_group_names_lookup[name] = len(self.vertex_group_names) - 1
 
   @property
-  def skinning_segmentation(self) -> npt.NDArray[np.int32]:
-    return np.array(self.skinning_weights).argmax(  # pyrefly: ignore[bad-return]  # pylint: disable=line-too-long
-        axis=0
-    )
+  def skinning_segmentation(self) -> jt.Int[np.ndarray, 'V']:
+    return np.array(self.skinning_weights).argmax(axis=0)
 
-  @enp.check_and_normalize_arrays(strict=False)
   def vertex_positions_bind_pose(
       self,
-      identity: enpt.FloatArray['A1 ... An I'],
-      expression: enpt.FloatArray['A1 ... An E'],
-  ) -> enpt.FloatArray['A1 ... An V 3']:
+      identity: jt.Float[ArrayT, '... I'],
+      expression: jt.Float[ArrayT, '... E'],
+  ) -> jt.Float[ArrayT, '... V 3']:
     return gnm_common.vertex_positions_bind_pose(
         identity,
         expression,
@@ -535,22 +527,20 @@ class GNM(gnm_base.GNMBase):
         self.expression_basis,
     )
 
-  @enp.check_and_normalize_arrays(strict=False)
   def joint_positions_bind_pose(
       self,
-      identity: enpt.FloatArray['A1 ... An I'],
-  ) -> enpt.FloatArray['A1 ... An J 3']:
+      identity: jt.Float[ArrayT, '... I'],
+  ) -> jt.Float[ArrayT, '... J 3']:
     return gnm_common.joint_positions_bind_pose(
         identity,
         self.template_joint_positions,
         self.joint_identity_basis,
     )
 
-  @enp.check_and_normalize_arrays(strict=False)
   def compute_pose_correctives(
       self,
-      rotations: enpt.FloatArray['A1 ... An J 3'],
-  ) -> enpt.FloatArray['A1 ... An V 3']:
+      rotations: jt.Float[ArrayT, '... J 3'],
+  ) -> jt.Float[ArrayT, '... V 3']:
     return gnm_common.compute_pose_correctives(
         rotations,
         self.pose_correctives_regressor,
@@ -559,24 +549,22 @@ class GNM(gnm_base.GNMBase):
         self.num_vertices,
     )
 
-  @enp.check_and_normalize_arrays(strict=False)
   def joint_transforms_world(
       self,
-      joints: enpt.FloatArray['A1 ... An J 3'],
-      rotations: enpt.FloatArray['A1 ... An J 3'],
-      translation: enpt.FloatArray['A1 ... An 3'],
-  ) -> enpt.FloatArray['A1 ... An J 4 4']:
+      joints: jt.Float[ArrayT, '... J 3'],
+      rotations: jt.Float[ArrayT, '... J 3'],
+      translation: jt.Float[ArrayT, '... 3'],
+  ) -> jt.Float[ArrayT, '... J 4 4']:
     return gnm_common.joint_transforms_world(
         joints, rotations, translation, self.joint_parent_indices
     )
 
-  @enp.check_and_normalize_arrays(strict=False)
   def get_posed_joint_transforms(
       self,
-      identity: enpt.FloatArray['A1 ... An I'],
-      rotations: enpt.FloatArray['A1 ... An J 3'],
-      translation: enpt.FloatArray['A1 ... An 3'],
-  ) -> enpt.FloatArray['A1 ... An J 4 4']:
+      identity: jt.Float[ArrayT, '... I'],
+      rotations: jt.Float[ArrayT, '... J 3'],
+      translation: jt.Float[ArrayT, '... 3'],
+  ) -> jt.Float[ArrayT, '... J 4 4']:
     self._check_parameter_shapes(
         identity=identity, rotations=rotations, translation=translation
     )
@@ -589,7 +577,7 @@ class GNM(gnm_base.GNMBase):
         translation=translation,
     )
 
-  def vertex_group(self, name: str) -> npt.NDArray[np.floating]:
+  def vertex_group(self, name: str) -> jt.Float[np.ndarray, 'V']:
     try:
       return np.array(self.vertex_groups[self._vertex_group_names_lookup[name]])
     except KeyError as exc:
@@ -599,7 +587,7 @@ class GNM(gnm_base.GNMBase):
 
   def vertex_group_mask(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
-  ) -> npt.NDArray[np.bool_]:
+  ) -> jt.Bool[np.ndarray, 'V']:
     result_mask = np.zeros(self.num_vertices, dtype=bool)
     for name in names:
       operator, inverse = '|', False
@@ -621,38 +609,40 @@ class GNM(gnm_base.GNMBase):
 
   def vertex_group_indices(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
-  ) -> npt.NDArray[np.integer]:
+  ) -> jt.Int[np.ndarray, 'V_group']:
     return np.where(self.vertex_group_mask(*names, threshold=threshold))[0]
 
   def quad_indices_for_group(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
-  ) -> npt.NDArray[np.integer]:
+  ) -> jt.Int[np.ndarray, 'Q_group']:
     mask = self.vertex_group_mask(*names, threshold=threshold)
     return np.where(np.all(mask[self.quads], axis=-1))[0]
 
   def triangle_indices_for_group(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
-  ) -> npt.NDArray[np.integer]:
+  ) -> jt.Int[np.ndarray, 'T_group']:
     mask = self.vertex_group_mask(*names, threshold=threshold)
     return np.where(np.all(mask[self.triangles], axis=-1))[0]
 
-  def quads_group(self, *names: str) -> npt.NDArray[np.integer]:
+  def quads_group(self, *names: str) -> jt.Int[np.ndarray, 'Q_group 4']:
     return np.array(self.quads)[self.quad_indices_for_group(*names)]
 
-  def triangles_group(self, *names: str) -> npt.NDArray[np.integer]:
+  def triangles_group(self, *names: str) -> jt.Int[np.ndarray, 'T_group 3']:
     return np.array(self.triangles)[self.triangle_indices_for_group(*names)]
 
-  def quad_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+  def quad_uvs_group(self, *names: str) -> jt.Float[np.ndarray, 'Q_group 4 2']:
     return np.array(self.quad_uvs)[self.quad_indices_for_group(*names)]
 
-  def triangle_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+  def triangle_uvs_group(
+      self, *names: str
+  ) -> jt.Float[np.ndarray, 'T_group 3 2']:
     return np.array(self.triangle_uvs)[self.triangle_indices_for_group(*names)]
 
-  def vertex_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+  def vertex_uvs_group(self, *names: str) -> jt.Float[np.ndarray, 'V_group 2']:
     return self.vertex_uvs[self.vertex_group_indices(*names)]
 
   @property
-  def quad_udim_tiles(self) -> npt.NDArray[np.int32]:
+  def quad_udim_tiles(self) -> jt.Int32[np.ndarray, 'Q']:
     """The UDIM tile number of each quad, (Q,).
 
     Computed on access from vertex groups without caching. Each region of
@@ -667,7 +657,7 @@ class GNM(gnm_base.GNMBase):
     return gnm_udim.quad_tiles(self)
 
   @property
-  def triangle_udim_tiles(self) -> npt.NDArray[np.int32]:
+  def triangle_udim_tiles(self) -> jt.Int32[np.ndarray, 'T']:
     """The UDIM tile number of each triangle, (T,).
 
     Computed on access from vertex groups without caching. The triangulated
@@ -681,7 +671,7 @@ class GNM(gnm_base.GNMBase):
     return gnm_udim.triangle_tiles(self)
 
   @property
-  def quad_uvs_udim(self) -> npt.NDArray[np.floating]:
+  def quad_uvs_udim(self) -> jt.Float[np.ndarray, 'Q 4 2']:
     """Per-quad texture coordinates in UDIM layout, (Q, 4, 2).
 
     Computed on access from vertex groups without caching. Unlike `quad_uvs`,
@@ -692,7 +682,7 @@ class GNM(gnm_base.GNMBase):
     return gnm_udim.quad_uvs(self)
 
   @property
-  def triangle_uvs_udim(self) -> npt.NDArray[np.floating]:
+  def triangle_uvs_udim(self) -> jt.Float[np.ndarray, 'T 3 2']:
     """Per-triangle texture coordinates in UDIM layout, (T, 3, 2).
 
     Computed on access from vertex groups without caching. The triangulated
@@ -702,8 +692,8 @@ class GNM(gnm_base.GNMBase):
 
   def compute_vertex_normals(
       self,
-      vertices: enpt.FloatArray['A1 ... An V 3'],
-  ) -> enpt.FloatArray['A1 ... An V 3']:
+      vertices: jt.Float[ArrayT, '... V 3'],
+  ) -> jt.Float[ArrayT, '... V 3']:
     """Computes vertex normals. Must be overridden by subclasses."""
     raise NotImplementedError(
         'Subclasses must implement compute_vertex_normals.'
@@ -711,7 +701,7 @@ class GNM(gnm_base.GNMBase):
 
   def prune_vertices(
       self,
-      keep_vertices: enpt.IntArray['V_pruned'],  # pyrefly: ignore[unknown-name]
+      keep_vertices: jt.Int[ArrayT, 'V_pruned'],
   ) -> None:
     """Prunes model vertices in-place.
 
@@ -783,11 +773,11 @@ class GNM(gnm_base.GNMBase):
     _clear_cached_properties(self)
 
 
-def _check_batch_dims(
-    identity: enpt.FloatArray['... I'] | None = None,
-    expression: enpt.FloatArray['... E'] | None = None,
-    rotations: enpt.FloatArray['... J 3'] | None = None,
-    translation: enpt.FloatArray['... 3'] | None = None,
+def _check_batch_dims[ArrayT: Any](
+    identity: jt.Float[ArrayT, '... I'] | None = None,
+    expression: jt.Float[ArrayT, '... E'] | None = None,
+    rotations: jt.Float[ArrayT, '... J 3'] | None = None,
+    translation: jt.Float[ArrayT, '... 3'] | None = None,
 ) -> tuple[int, ...]:
   """Ensures that the leading batch dimensions of all inputs are the same."""
   shapes = {}
