@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for camera_conversions."""
+"""Tests for NumPy OpenCV and OpenGL camera conversion functions."""
 
 import tempfile
 from typing import TypeAlias
@@ -25,24 +25,12 @@ from gnm.shape.visualization import camera_conversions
 import mediapy as media
 import numpy as np
 from scipy.spatial import transform
-import tensorflow as tf
 
 
 _OPENCV_TO_OPENGL = np.diag([1.0, -1.0, -1.0, 1.0]).astype(dtype=np.float32)
 
 _opencv_intrinsics_to_opengl_view_matrix = (
     camera_conversions.opencv_intrinsics_to_opengl_view_matrix
-)
-
-_opencv_intrinsics_to_opengl_view_matrix_tf = (
-    camera_conversions.opencv_intrinsics_to_opengl_view_matrix_tf
-)
-
-
-_opencv_extrinsics_to_opengl = camera_conversions.opencv_extrinsics_to_opengl
-
-_opencv_extrinsics_to_opengl_tf = (
-    camera_conversions.opencv_extrinsics_to_opengl_tf
 )
 
 
@@ -337,79 +325,6 @@ class CameraConversionsTest(parameterized.TestCase):
     )
 
     np.testing.assert_allclose(as_opencv, opencv_camera_matrix)
-
-  # TF Parity Tests
-
-  @parameterized.parameters([
-      ((1,),),
-      ((5,),),
-      ((5, 4),),
-      ((5, 4, 3),),
-      ((5, 4, 3, 2),),
-      ((5, 4, 3, 2, 1),),
-  ])
-  def test_opencv_to_opengl_intrinsics_tf_parity(
-      self, batch_dims: tuple[int, ...]
-  ):
-    """Tests that the TensorFlow implementation matches the NumPy one."""
-    height, width = 256, 256
-
-    focal_length = np.full(batch_dims + (2,), height, dtype=np.float32)
-    principal_point = np.full(
-        batch_dims + (2,), [width * 0.5, height * 0.5], dtype=np.float32
-    )
-
-    opengl_view_matrix_np = _opencv_intrinsics_to_opengl_view_matrix(
-        focal_length,
-        principal_point,
-        width=width,
-        height=height,
-        near=self.near,
-        far=self.far,
-    )
-    opengl_view_matrix_tf = _opencv_intrinsics_to_opengl_view_matrix_tf(
-        tf.convert_to_tensor(focal_length, dtype=tf.float32),
-        tf.convert_to_tensor(principal_point, dtype=tf.float32),
-        width=width,
-        height=height,
-        near=self.near,
-        far=self.far,
-    )
-
-    np.testing.assert_allclose(
-        opengl_view_matrix_np, opengl_view_matrix_tf.numpy()
-    )
-
-  @parameterized.parameters([
-      ((1,),),
-      ((5,),),
-      ((5, 4),),
-      ((5, 4, 3),),
-      ((5, 4, 3, 2),),
-      ((5, 4, 3, 2, 1),),
-  ])
-  def test_opencv_to_opengl_extrinsics_tf_parity(
-      self, batch_dims: tuple[int, ...]
-  ):
-    """Tests that the TensorFlow implementation matches the NumPy one."""
-    rotations = _Rotation.random(int(np.prod(batch_dims)), self.rng).as_matrix()
-    rotations = np.reshape(rotations, batch_dims + (3, 3))
-
-    translation = self.rng.uniform(-2, 2, size=batch_dims + (3,))
-
-    extrinsics = np.expand_dims(np.eye(4), tuple(range(len(batch_dims))))
-    extrinsics = np.tile(extrinsics, batch_dims + (1, 1))
-    extrinsics[..., :3, :3] = rotations[..., :3, :3]
-    extrinsics[..., 3, :3] = translation
-
-    opengl_extrinsics_np = _opencv_extrinsics_to_opengl(extrinsics)
-    opengl_extrinsics_tf = _opencv_extrinsics_to_opengl_tf(
-        tf.convert_to_tensor(extrinsics, dtype=tf.float32)
-    )
-
-    np.testing.assert_allclose(
-        opengl_extrinsics_np, opengl_extrinsics_tf.numpy()
-    )
 
   def _rasterize_rectangle(
       self,

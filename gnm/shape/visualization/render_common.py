@@ -799,8 +799,7 @@ def load_edgeflow_texture(texture_path: epath.Path | None) -> FloatArray | None:
   """
   if texture_path is None:
     return None
-  with texture_path.open('rb') as f:
-    image = imageio.imread(f).astype(np.float32)
+  image = imageio.imread(texture_path.read_bytes()).astype(np.float32)
   image = (image / np.iinfo(np.uint8).max) * 0.5 + 0.5
   image.flags.writeable = False
   return image
