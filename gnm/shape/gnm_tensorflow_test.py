@@ -219,9 +219,12 @@ class GNMTensorflowTest(parameterized.TestCase):
     )
     n_batch = 5
     bad_input = tf.zeros((n_batch, bad_dimension), dtype=tf.float32)
-    kwargs = gnm_test_utils.random_gnm_parameters(
-        gnm_np, batch_shape=(n_batch,), seed=self.rng
-    )
+    kwargs = {
+        k: tf.convert_to_tensor(v, dtype=tf.float32)
+        for k, v in gnm_test_utils.random_gnm_parameters(
+            gnm_np, batch_shape=(n_batch,), seed=self.rng
+        ).items()
+    }
     for key in kwargs:
       with self.assertRaises(ValueError):
         gnm_tf(**(kwargs | {key: bad_input}))
@@ -245,9 +248,12 @@ class GNMTensorflowTest(parameterized.TestCase):
         {'rotations': tf.zeros([n_batch, gnm_np.num_joints, 4])},
         {'translation': tf.zeros([n_batch, 4])},
     ]
-    joint_transform_kwargs = gnm_test_utils.random_gnm_parameters(
-        gnm_np, batch_shape=(n_batch,), seed=self.rng
-    )
+    joint_transform_kwargs = {
+        k: tf.convert_to_tensor(v, dtype=tf.float32)
+        for k, v in gnm_test_utils.random_gnm_parameters(
+            gnm_np, batch_shape=(n_batch,), seed=self.rng
+        ).items()
+    }
     joint_transform_kwargs.pop('expression')
 
     for bad_input_dict in bad_inputs:

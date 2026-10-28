@@ -19,8 +19,8 @@ import enum
 from typing import Any
 
 from gnm.shape import gnm_numpy
+import jaxtyping as jt
 import numpy as np
-import numpy.typing as npt
 from scipy import linalg
 
 
@@ -119,7 +119,7 @@ def _get_corresponding_indices(
     basis_type: BasisType,
     from_gnm: gnm_numpy.GNM,
     to_gnm: gnm_numpy.GNM,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[jt.Int32[np.ndarray, 'M'], jt.Int32[np.ndarray, 'M']]:
   """Get indices mapping common names subset from `from_basis` to `to_basis`."""
   attribute_name = _BASIS_NAMES_ATTRIBUTE_MAP[basis_type]
   from_names = np.array(get_gnm_attribute(from_gnm, attribute_name))
@@ -152,7 +152,7 @@ def region_names_from_components_names(names: Sequence[str]) -> Sequence[str]:
 
 def region_to_component_indices_map(
     basis_type: BasisType, gnm: gnm_numpy.GNM
-) -> Mapping[str, np.ndarray]:
+) -> Mapping[str, jt.Int32[np.ndarray, 'R']]:
   """Return a map from basis region name to component indices."""
   names = components_names(basis_type, gnm)
   region_names = region_names_from_components_names(names)
@@ -165,12 +165,12 @@ def region_to_component_indices_map(
 
 
 def convert_coefficients(
-    coefficients: npt.NDArray[np.floating],
+    coefficients: jt.Float[np.ndarray, '... C_from'],
     *,
     basis_type: BasisType,
     from_gnm: gnm_numpy.GNM,
     to_gnm: gnm_numpy.GNM,
-) -> npt.NDArray[np.floating]:
+) -> jt.Float[np.ndarray, '... C_to']:
   """Convert coefficients from one GNM model to another.
 
   Args:
@@ -211,8 +211,10 @@ def convert_coefficients(
 
 
 def _coefficients_to_regions(
-    coefficients: np.ndarray, basis_type: BasisType, gnm: gnm_numpy.GNM
-) -> dict[str, np.ndarray]:
+    coefficients: jt.Float[np.ndarray, '... C'],
+    basis_type: BasisType,
+    gnm: gnm_numpy.GNM,
+) -> dict[str, jt.Float[np.ndarray, '... R']]:
   """Splits the coefficients ([A1, ..., An], C) to face regions."""
   validate_gnm(gnm)
   attribute_name = BASIS_DIM_ATTRIBUTE_MAP[basis_type]
@@ -240,10 +242,10 @@ def _coefficients_to_regions(
 
 
 def _regions_to_coefficients(
-    regions: Mapping[str, np.ndarray],
+    regions: Mapping[str, jt.Float[np.ndarray, '... R']],
     basis_type: BasisType,
     gnm: gnm_numpy.GNM,
-) -> np.ndarray:
+) -> jt.Float[np.ndarray, '... C']:
   """Combines face regions to a single basis array ([A1, ..., An], C])."""
   validate_gnm(gnm)
   attribute_name = BASIS_DIM_ATTRIBUTE_MAP[basis_type]
@@ -271,7 +273,7 @@ def _regions_to_coefficients(
 
 def _region_components(
     basis_type: BasisType, gnm: gnm_numpy.GNM
-) -> dict[str, np.ndarray]:
+) -> dict[str, jt.Float[np.ndarray, 'R V 3']]:
   """Return per-region basis components, each region shape (Ri, V, 3)."""
   validate_gnm(gnm)
   attribute_name = _BASIS_BASIS_ATTRIBUTE_MAP[basis_type]
@@ -281,8 +283,8 @@ def _region_components(
 
 
 def compute_scaling_for_basis(
-    vertex_basis: npt.NDArray[np.floating],
-) -> npt.NDArray[np.floating]:
+    vertex_basis: jt.Float[np.ndarray, 'D V 3'],
+) -> jt.Float[np.ndarray, 'D D']:
   """Computes the scaling matrix to make basis equivalent to vertex losses.
 
   Args:
@@ -301,7 +303,7 @@ def compute_scaling_for_basis(
 
 def scaling_for_expression_loss(
     gnm: gnm_numpy.GNM,
-) -> npt.NDArray[np.floating]:
+) -> jt.Float[np.ndarray, 'E E']:
   """Scaling matrix to make expression losses equivalent to vertex losses.
 
   The loss between expression components is: || e1 - e2 ||^2.
@@ -330,7 +332,7 @@ def scaling_for_expression_loss(
 
 def scaling_for_identity_loss(
     gnm: gnm_numpy.GNM,
-) -> npt.NDArray[np.floating]:
+) -> jt.Float[np.ndarray, 'I I']:
   """Scaling matrix to make identity losses equivalent to vertex losses."""
   validate_gnm(gnm)
   return compute_scaling_for_basis(
@@ -339,8 +341,8 @@ def scaling_for_identity_loss(
 
 
 def identity_to_regions(
-    identity: np.ndarray, gnm: gnm_numpy.GNM
-) -> dict[str, np.ndarray]:
+    identity: jt.Float[np.ndarray, '... I'], gnm: gnm_numpy.GNM
+) -> dict[str, jt.Float[np.ndarray, '... R']]:
   """Splits the identity ([A1, ..., An], I]) to face regions."""
   return _coefficients_to_regions(
       identity, basis_type=BasisType.IDENTITY, gnm=gnm
@@ -348,8 +350,8 @@ def identity_to_regions(
 
 
 def expression_to_regions(
-    expression: np.ndarray, gnm: gnm_numpy.GNM
-) -> dict[str, np.ndarray]:
+    expression: jt.Float[np.ndarray, '... E'], gnm: gnm_numpy.GNM
+) -> dict[str, jt.Float[np.ndarray, '... R']]:
   """Splits the expression ([A1, ..., An], E]) to face regions."""
   return _coefficients_to_regions(
       expression, basis_type=BasisType.EXPRESSION, gnm=gnm
@@ -358,7 +360,7 @@ def expression_to_regions(
 
 def expression_regions_indices(
     gnm: gnm_numpy.GNM,
-) -> dict[str, np.ndarray]:
+) -> dict[str, jt.Int32[np.ndarray, 'R']]:
   """Returns mapping from region name to expression component indices."""
   validate_gnm(gnm)
   return dict(region_to_component_indices_map(BasisType.EXPRESSION, gnm))
@@ -366,7 +368,7 @@ def expression_regions_indices(
 
 def identity_regions_indices(
     gnm: gnm_numpy.GNM,
-) -> dict[str, np.ndarray]:
+) -> dict[str, jt.Int32[np.ndarray, 'R']]:
   """Returns mapping from region name to identity component indices."""
   validate_gnm(gnm)
   return dict(region_to_component_indices_map(BasisType.IDENTITY, gnm))
@@ -399,8 +401,8 @@ def identity_regions_dims(gnm: gnm_numpy.GNM) -> dict[str, int]:
 
 
 def joint_rotations_to_regions(
-    joint_rotations: np.ndarray, gnm: gnm_numpy.GNM
-) -> dict[str, np.ndarray]:
+    joint_rotations: jt.Float[np.ndarray, '... J 3'], gnm: gnm_numpy.GNM
+) -> dict[str, jt.Float[np.ndarray, '... 3']]:
   """Splits the joint rotations ([A1, ..., An], J, 3]) to invidual regions."""
   validate_gnm(gnm)
   joint_names: list[str] = get_gnm_attribute(gnm, 'joint_names')
@@ -417,26 +419,23 @@ def joint_rotations_to_regions(
 
 
 def regions_to_identity(
-    regions: Mapping[str, np.ndarray], gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    regions: Mapping[str, jt.Float[np.ndarray, '... R']], gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, '... I']:
   """Combines face regions to single identity array ([A1, ..., An], I])."""
   return _regions_to_coefficients(regions, BasisType.IDENTITY, gnm)
 
 
 def regions_to_expression(
-    regions: Mapping[str, np.ndarray], gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    regions: Mapping[str, jt.Float[np.ndarray, '... R']], gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, '... E']:
   """Combines face regions to single expression array ([A1, ..., An], E])."""
   return _regions_to_coefficients(regions, BasisType.EXPRESSION, gnm)
 
 
 def regions_to_joint_rotations(
-    regions: Mapping[str, np.ndarray], gnm: gnm_numpy.GNM
-) -> np.ndarray:
-  """Combines joint rotations to single rotations array.
-
-  Returns array of shape ([A1, ..., An], J, 3]).
-  """
+    regions: Mapping[str, jt.Float[np.ndarray, '... 3']], gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, '... J 3']:
+  """Combines joint rotations to single rotations array ([A1, ..., An], J, 3)."""
   validate_gnm(gnm)
   joint_names: list[str] = get_gnm_attribute(gnm, 'joint_names')
   if not regions:
@@ -461,19 +460,21 @@ def regions_to_joint_rotations(
 
 def region_identity_components(
     gnm: gnm_numpy.GNM,
-) -> dict[str, np.ndarray]:
+) -> dict[str, jt.Float[np.ndarray, 'R V 3']]:
   """Return per-region identity components, each region shape (Ri, V, 3)."""
   return _region_components(BasisType.IDENTITY, gnm)
 
 
 def region_expression_components(
     gnm: gnm_numpy.GNM,
-) -> dict[str, np.ndarray]:
+) -> dict[str, jt.Float[np.ndarray, 'R V 3']]:
   """Return per-region expression components, each region shape (Ri, V, 3)."""
   return _region_components(BasisType.EXPRESSION, gnm)
 
 
-def _sigmas(basis_type: BasisType, gnm: gnm_numpy.GNM) -> np.ndarray:
+def _sigmas(
+    basis_type: BasisType, gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, 'C']:
   """Return the standard deviations of basis components, shape (C, )."""
   validate_gnm(gnm)
 
@@ -501,37 +502,41 @@ def _sigmas(basis_type: BasisType, gnm: gnm_numpy.GNM) -> np.ndarray:
   return region_sigmas
 
 
-def expression_sigmas(gnm: gnm_numpy.GNM) -> np.ndarray:
+def expression_sigmas(gnm: gnm_numpy.GNM) -> jt.Float[np.ndarray, 'E']:
   """Return the standard deviations of expression components, shape (E, )."""
   return _sigmas(BasisType.EXPRESSION, gnm)
 
 
 def _normalize_coefficients(
-    coefficients: np.ndarray, basis_type: BasisType, gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    coefficients: jt.Float[np.ndarray, '... C'],
+    basis_type: BasisType,
+    gnm: gnm_numpy.GNM,
+) -> jt.Float[np.ndarray, '... C']:
   """Normalize coefficients ([A1, ..., An], C) by corresponding sigmas."""
   s = _sigmas(basis_type, gnm)
   return coefficients / s
 
 
 def _denormalize_coefficients(
-    coefficients: np.ndarray, basis_type: BasisType, gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    coefficients: jt.Float[np.ndarray, '... C'],
+    basis_type: BasisType,
+    gnm: gnm_numpy.GNM,
+) -> jt.Float[np.ndarray, '... C']:
   """Denormalize coefficients ([A1, ..., An], C) by corresponding sigmas."""
   s = _sigmas(basis_type, gnm)
   return coefficients * s
 
 
 def normalize_expression(
-    expression: np.ndarray, gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    expression: jt.Float[np.ndarray, '... E'], gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, '... E']:
   """Normalize expression coefficients ([A1, ..., An], E)."""
   return _normalize_coefficients(expression, BasisType.EXPRESSION, gnm)
 
 
 def denormalize_expression(
-    expression: np.ndarray, gnm: gnm_numpy.GNM
-) -> np.ndarray:
+    expression: jt.Float[np.ndarray, '... E'], gnm: gnm_numpy.GNM
+) -> jt.Float[np.ndarray, '... E']:
   """Denormalize expression coefficients ([A1, ..., An], E)."""
   return _denormalize_coefficients(expression, BasisType.EXPRESSION, gnm)
 
