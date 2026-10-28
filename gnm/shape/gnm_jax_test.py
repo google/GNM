@@ -247,10 +247,10 @@ class GNMJaxTest(parameterized.TestCase):
 
     bad_dimension = gnm.identity_dim + gnm.num_joints
     bad_inputs = [
-        {'identity': np.zeros(bad_dimension)},
-        {'rotations': np.zeros([gnm.num_joints + 1, 3])},
-        {'rotations': np.zeros([gnm.num_joints, 4])},
-        {'translation': np.zeros([4])},
+        {'identity': jnp.zeros(bad_dimension)},
+        {'rotations': jnp.zeros([gnm.num_joints + 1, 3])},
+        {'rotations': jnp.zeros([gnm.num_joints, 4])},
+        {'translation': jnp.zeros([4])},
     ]
     joint_transform_kwargs = self._get_default_kwargs(gnm_np)
     joint_transform_kwargs.pop('expression')
