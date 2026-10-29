@@ -19,8 +19,8 @@ import enum
 from typing import Any
 
 import immutabledict
+import jaxtyping as jt
 import numpy as np
-import numpy.typing as npt
 
 # The first UDIM tile, as defined by the Mari/OpenUSD UDIM convention: a tile
 # whose lower-left corner is at integer texture coordinate (u, v) is numbered
@@ -83,7 +83,10 @@ UDIM_TILE_REGIONS: Mapping[UdimTile, tuple[str, ...]] = (
 )
 
 
-def assign_tiles(model: Any, faces: npt.ArrayLike) -> npt.NDArray[np.int32]:
+def assign_tiles(
+    model: Any,
+    faces: jt.Int[np.ndarray, 'F C'],
+) -> jt.Int32[np.ndarray, 'F']:
   """Assigns each face the tile of the `UDIM_TILE_REGIONS` region it lies in.
 
   Args:
@@ -125,9 +128,9 @@ def assign_tiles(model: Any, faces: npt.ArrayLike) -> npt.NDArray[np.int32]:
 
 
 def offset_uvs_into_tiles(
-    uvs: npt.NDArray[np.floating],
-    tiles: npt.NDArray[np.int32],
-) -> npt.NDArray[np.floating]:
+    uvs: jt.Float[np.ndarray, 'F C 2'],
+    tiles: jt.Int32[np.ndarray, 'F'],
+) -> jt.Float[np.ndarray, 'F C 2']:
   """Translates per-face texture coordinates into their UDIM tiles.
 
   Args:
@@ -146,22 +149,22 @@ def offset_uvs_into_tiles(
   return uvs + offsets[:, None, :]
 
 
-def quad_tiles(model: Any) -> npt.NDArray[np.int32]:
+def quad_tiles(model: Any) -> jt.Int32[np.ndarray, 'Q']:
   """Returns the UDIM tile number of each quad in the model."""
-  return assign_tiles(model, model.quads)
+  return assign_tiles(model, np.asarray(model.quads))
 
 
-def triangle_tiles(model: Any) -> npt.NDArray[np.int32]:
+def triangle_tiles(model: Any) -> jt.Int32[np.ndarray, 'T']:
   """Returns the UDIM tile number of each triangle in the model."""
-  return assign_tiles(model, model.triangles)
+  return assign_tiles(model, np.asarray(model.triangles))
 
 
-def quad_uvs(model: Any) -> npt.NDArray[np.floating]:
+def quad_uvs(model: Any) -> jt.Float[np.ndarray, 'Q 4 2']:
   """Returns per-quad texture coordinates in UDIM layout."""
   return offset_uvs_into_tiles(np.asarray(model.quad_uvs), quad_tiles(model))
 
 
-def triangle_uvs(model: Any) -> npt.NDArray[np.floating]:
+def triangle_uvs(model: Any) -> jt.Float[np.ndarray, 'T 3 2']:
   """Returns per-triangle texture coordinates in UDIM layout."""
   return offset_uvs_into_tiles(
       np.asarray(model.triangle_uvs), triangle_tiles(model)
