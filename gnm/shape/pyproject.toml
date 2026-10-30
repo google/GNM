@@ -30,8 +30,9 @@ dependencies = [
     "immutabledict",
     "importlib_resources",
     "ipywidgets",
+    "jaxtyping",
     "notebook",
-    "numpy",    
+    "numpy",
     "opencv-python",
     "opt-einsum",
     "rtree",
@@ -46,7 +47,6 @@ dependencies = [
 [project.optional-dependencies]
 jax = [
     "jax",
-    "jaxtyping",
 ]
 pytorch = [
     "torch",
