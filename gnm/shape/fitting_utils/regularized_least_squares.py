@@ -57,11 +57,11 @@ def regularized_least_squares(
   """
 
   regularization_sqrt = np.sqrt(regularization + _EPSILON)
+  num_coefficients = left_hand_side_data_term.shape[1]
 
   # Append a diagonal array multiplied with the regularization weight.
   left_hand_side_regularization_term = regularization_sqrt * np.eye(
-      left_hand_side_data_term.shape[0],
-      left_hand_side_data_term.shape[1],
+      num_coefficients,
       dtype=left_hand_side_data_term.dtype,
   )
   left_hand_side = np.concatenate(
@@ -70,7 +70,10 @@ def regularized_least_squares(
 
   # Append an array full of zeros to the right-hand side for the regularization
   # term.
-  right_hand_side_regularization_term = np.zeros_like(right_hand_side_data_term)
+  right_hand_side_regularization_term = np.zeros(
+      (num_coefficients, *right_hand_side_data_term.shape[1:]),
+      dtype=right_hand_side_data_term.dtype,
+  )
   right_hand_side = np.concatenate(
       [right_hand_side_data_term, right_hand_side_regularization_term]
   )
@@ -96,11 +99,11 @@ class RegularizedLeastSquares:
       regularization: The scalar regularization that will be used.
     """
     regularization_sqrt = np.sqrt(regularization + _EPSILON)
+    self._num_coefficients = left_hand_side_data_term.shape[1]
 
     # Append a diagonal array multiplied with the regularization weight.
     left_hand_side_regularization_term = regularization_sqrt * np.eye(
-        left_hand_side_data_term.shape[0],
-        left_hand_side_data_term.shape[1],
+        self._num_coefficients,
         dtype=left_hand_side_data_term.dtype,
     )
     left_hand_side = np.concatenate(
@@ -124,8 +127,9 @@ class RegularizedLeastSquares:
     Returns:
       The least-squares solution, x.
     """
-    right_hand_side_regularization_term = np.zeros_like(
-        right_hand_side_data_term
+    right_hand_side_regularization_term = np.zeros(
+        (self._num_coefficients, *right_hand_side_data_term.shape[1:]),
+        dtype=right_hand_side_data_term.dtype,
     )
     right_hand_side = np.concatenate(
         [right_hand_side_data_term, right_hand_side_regularization_term],

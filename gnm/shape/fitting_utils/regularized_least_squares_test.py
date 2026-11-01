@@ -74,6 +74,39 @@ class RegularizedLeastSquaresTest(parameterized.TestCase):
     )
     np.testing.assert_allclose(actual_solution, expected_solution)
 
+  @parameterized.parameters(False, True)
+  def test_underdetermined_system(self, multiple_targets):
+    """Tests regularization when there are fewer equations than unknowns."""
+    array = np.array([[1.0, 1.0]])
+    target = np.array([[1.0, 2.0]]) if multiple_targets else np.array([1.0])
+    weight = 1.0
+
+    actual_solution = _regularized_least_squares(array, target, weight)[0]
+    expected_solution = (
+        np.linalg.inv(array.T @ array + weight * np.eye(array.shape[1]))
+        @ array.T
+        @ target
+    )
+
+    np.testing.assert_allclose(actual_solution, expected_solution)
+
+  @parameterized.parameters(False, True)
+  def test_solver_underdetermined_system(self, multiple_targets):
+    """Tests the solver when there are fewer equations than unknowns."""
+    array = np.array([[1.0, 1.0]])
+    target = np.array([[1.0, 2.0]]) if multiple_targets else np.array([1.0])
+    weight = 1.0
+
+    solver = regularized_least_squares.RegularizedLeastSquares(array, weight)
+    actual_solution = solver.solve(target)
+    expected_solution = (
+        np.linalg.inv(array.T @ array + weight * np.eye(array.shape[1]))
+        @ array.T
+        @ target
+    )
+
+    np.testing.assert_allclose(actual_solution, expected_solution)
+
 
 if __name__ == "__main__":
   absltest.main()
