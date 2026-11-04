@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import dataclasses
-from typing import Any, ClassVar, Self
+import threading
+from typing import Any, ClassVar, Self, TypeAlias
 
 import cv2
 import drjit as dr
@@ -43,6 +44,13 @@ MITSUBA_USE_LEGACY_MESH_API = tuple(
     )
     if x.isdigit()
 ) < (3, 9, 1)
+
+_SensorKey: TypeAlias = tuple[str | None, int, int, int]
+
+_SENSORS: dict[
+    _SensorKey, tuple[mi.Sensor, mi.SceneParameters | None, int]
+] = {}
+_SENSORS_LOCK = threading.RLock()
 
 
 def _create_mitsuba_mesh_legacy(
@@ -225,22 +233,29 @@ def create_mitsuba_mesh(
 
 
 def _create_sensor_dict(
-    world_to_camera: enpt.FloatArray['4 4'],
-    camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
     *,
-    width: int,
-    height: int,
+    fov_x: float,
+    offset_x: float,
+    offset_y: float,
+    to_world_mitsuba: enpt.FloatArray['4 4'],
     render_width: int,
     render_height: int,
     spp: int,
 ) -> dict[str, Any]:
-  """Constructs the dictionary spec for a Mitsuba perspective sensor."""
-  fov_x, offset_x, offset_y, to_world_mitsuba = _compute_sensor_parameters(
-      world_to_camera=world_to_camera,
-      camera_to_image=camera_to_image,
-      width=width,
-      height=height,
-  )
+  """Constructs the dictionary specification for a perspective sensor.
+
+  Args:
+    fov_x: Horizontal field of view in degrees.
+    offset_x: Normalized principal point x-offset.
+    offset_y: Normalized principal point y-offset.
+    to_world_mitsuba: Sensor-to-world 4x4 transform in Mitsuba convention.
+    render_width: Supersampled film width in pixels.
+    render_height: Supersampled film height in pixels.
+    spp: Raytracing samples per pixel.
+
+  Returns:
+    A Mitsuba plugin specification dictionary for `mi.load_dict`.
+  """
   return {
       'type': 'perspective',
       'fov': fov_x,
@@ -259,6 +274,86 @@ def _create_sensor_dict(
           'sample_count': spp,
       },
   }
+
+
+def _update_sensor_parameters(
+    sensor_parameters: mi.SceneParameters,
+    *,
+    fov_x: float,
+    offset_x: float,
+    offset_y: float,
+    to_world_mitsuba: enpt.FloatArray['4 4'],
+) -> None:
+  """Updates camera parameters on a traversed Mitsuba perspective sensor.
+
+  Args:
+    sensor_parameters: Traversed `mi.SceneParameters` instance for the sensor.
+    fov_x: Horizontal field of view in degrees.
+    offset_x: Normalized principal point x-offset.
+    offset_y: Normalized principal point y-offset.
+    to_world_mitsuba: Sensor-to-world 4x4 transform in Mitsuba convention.
+  """
+  sensor_parameters['x_fov'] = fov_x
+  sensor_parameters['principal_point_offset_x'] = offset_x
+  sensor_parameters['principal_point_offset_y'] = offset_y
+  sensor_parameters['to_world'] = mi.ScalarTransform4f(to_world_mitsuba)
+  sensor_parameters.update()
+
+
+def _get_or_update_sensor(
+    *,
+    sensor_key: _SensorKey,
+    owner_id: int,
+    fov_x: float,
+    offset_x: float,
+    offset_y: float,
+    to_world_mitsuba: enpt.FloatArray['4 4'],
+) -> tuple[mi.Sensor, mi.SceneParameters | None]:
+  """Returns the shared Mitsuba sensor for `sensor_key`, updated for the frame.
+
+  Args:
+    sensor_key: Tuple of `(variant, render_width, render_height, spp)`.
+    owner_id: Identifier of the `GNMMeshRenderer` updating the sensor.
+    fov_x: Horizontal field of view in degrees.
+    offset_x: Normalized principal point x-offset.
+    offset_y: Normalized principal point y-offset.
+    to_world_mitsuba: Sensor-to-world 4x4 transform in Mitsuba convention.
+
+  Returns:
+    A tuple `(sensor, sensor_parameters)`, where `sensor_parameters` is None
+    when a new sensor was just created and has not been traversed yet.
+  """
+  _, render_width, render_height, spp = sensor_key
+  cached = _SENSORS.get(sensor_key)
+  if cached is not None:
+    sensor, sensor_parameters, _ = cached
+    with dr.suspend_grad():
+      if sensor_parameters is None:
+        sensor_parameters = mi.traverse(sensor)
+      _update_sensor_parameters(
+          sensor_parameters,
+          fov_x=fov_x,
+          offset_x=offset_x,
+          offset_y=offset_y,
+          to_world_mitsuba=to_world_mitsuba,
+      )
+    _SENSORS[sensor_key] = (sensor, sensor_parameters, owner_id)
+    return sensor, sensor_parameters
+
+  sensor_dict = _create_sensor_dict(
+      fov_x=fov_x,
+      offset_x=offset_x,
+      offset_y=offset_y,
+      to_world_mitsuba=to_world_mitsuba,
+      render_width=render_width,
+      render_height=render_height,
+      spp=spp,
+  )
+  with dr.suspend_grad():
+    sensor = mi.load_dict(sensor_dict)
+  if isinstance(sensor, mi.Sensor):
+    _SENSORS[sensor_key] = (sensor, None, owner_id)
+  return sensor, None
 
 
 def _compute_world_light_direction(
@@ -383,6 +478,9 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
   _sensor_params: mi.SceneParameters | None = dataclasses.field(
       default=None, init=False, repr=False, compare=False
   )
+  _sensor_key: _SensorKey | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
   _light_direction: enpt.FloatArray['3'] | None = dataclasses.field(
       default=None,
       init=False,
@@ -439,6 +537,35 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
           )
       self._scene_params.update()
 
+  def render(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      world_to_camera: enpt.FloatArray['... 4 4'],
+      camera_to_image: enpt.FloatArray['... 4 4'] | enpt.FloatArray['... 3 3'],
+      *,
+      image_size: tuple[int, int] = render_common.DEFAULT_IMAGE_SIZE,
+      triangles: enpt.IntArray['F 3'] | None = None,
+      triangle_uvs: enpt.FloatArray['F 3 2'] | None = None,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      multiple_gnms: bool = False,
+      verbose: bool = False,
+  ) -> render_common.MeshRenderOutput:
+    """Renders single-frame or batched 3D GNM meshes."""
+    with _SENSORS_LOCK:
+      return super().render(
+          vertices=vertices,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          image_size=image_size,
+          triangles=triangles,
+          triangle_uvs=triangle_uvs,
+          vertex_colors=vertex_colors,
+          vertex_normals=vertex_normals,
+          multiple_gnms=multiple_gnms,
+          verbose=verbose,
+      )
+
   def update_camera(
       self,
       world_to_camera: enpt.FloatArray['4 4'],
@@ -449,64 +576,77 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
     world_to_camera = np.asarray(world_to_camera, dtype=np.float32)
     camera_to_image = np.asarray(camera_to_image, dtype=np.float32)
 
-    if self._sensor is not None and self._is_camera_cached(
-        world_to_camera, camera_to_image, image_size
-    ):
-      return
-
     width, height = image_size
     render_width = width * self.multisample_antialiasing
     render_height = height * self.multisample_antialiasing
+    sensor_key = (mi.variant(), render_width, render_height, self.spp)
 
-    light_direction = _compute_world_light_direction(world_to_camera)
+    with _SENSORS_LOCK:
+      cached = _SENSORS.get(sensor_key)
+      is_current_owner = cached is None or cached[2] == id(self)
+      if (
+          self._sensor is not None
+          and self._sensor_key == sensor_key
+          and is_current_owner
+          and self._is_camera_cached(
+              world_to_camera, camera_to_image, image_size
+          )
+      ):
+        return
 
-    if self._sensor is None or self._cached_image_size != image_size:
-      sensor_dict = _create_sensor_dict(
-          world_to_camera=world_to_camera,
-          camera_to_image=camera_to_image,
-          width=width,
-          height=height,
-          render_width=render_width,
-          render_height=render_height,
-          spp=self.spp,
-      )
-      with dr.suspend_grad():
-        sensor = mi.load_dict(sensor_dict)
-      self._sensor = sensor
-      self._sensor_params = None
-    else:
       fov_x, offset_x, offset_y, to_world_mitsuba = _compute_sensor_parameters(
           world_to_camera=world_to_camera,
           camera_to_image=camera_to_image,
           width=width,
           height=height,
       )
-      with dr.suspend_grad():
-        sensor_params = self._sensor_params
-        if sensor_params is None:
-          sensor_params = mi.traverse(self._sensor)
-          self._sensor_params = sensor_params
-        sensor_params['x_fov'] = fov_x
-        sensor_params['principal_point_offset_x'] = offset_x
-        sensor_params['principal_point_offset_y'] = offset_y
-        sensor_params['to_world'] = mi.ScalarTransform4f(to_world_mitsuba)
-        sensor_params.update()
+      light_direction = _compute_world_light_direction(world_to_camera)
 
-    self._cache_camera(world_to_camera, camera_to_image, image_size)
-    self._light_direction = light_direction
-
-    if self._scene is not None:
-      integrator = self._scene.integrator()
-      if integrator is not None:
-        setattr(
-            integrator,
-            'light_dir',
-            mi.ScalarVector3f(
-                float(light_direction[0]),
-                float(light_direction[1]),
-                float(light_direction[2]),
-            ),
+      if (
+          cached is None
+          and self._sensor is not None
+          and self._sensor_key == sensor_key
+      ):
+        with dr.suspend_grad():
+          sensor_parameters = self._sensor_params
+          if sensor_parameters is None:
+            sensor_parameters = mi.traverse(self._sensor)
+            self._sensor_params = sensor_parameters
+          _update_sensor_parameters(
+              sensor_parameters,
+              fov_x=fov_x,
+              offset_x=offset_x,
+              offset_y=offset_y,
+              to_world_mitsuba=to_world_mitsuba,
+          )
+      else:
+        sensor, sensor_parameters = _get_or_update_sensor(
+            sensor_key=sensor_key,
+            owner_id=id(self),
+            fov_x=fov_x,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            to_world_mitsuba=to_world_mitsuba,
         )
+        self._sensor = sensor
+        self._sensor_params = sensor_parameters
+        self._sensor_key = sensor_key
+
+      self._cache_camera(world_to_camera, camera_to_image, image_size)
+      self._light_direction = light_direction
+
+      if self._scene is not None:
+        integrator = self._scene.integrator()
+        if integrator is not None:
+          setattr(
+              integrator,
+              'light_dir',
+              mi.ScalarVector3f(
+                  float(light_direction[0]),
+                  float(light_direction[1]),
+                  float(light_direction[2]),
+              ),
+          )
 
   def close(self) -> None:
     """Releases cached Mitsuba scene, sensor, and bitmap state."""
@@ -516,11 +656,11 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
     self._scene_params = None
     self._sensor = None
     self._sensor_params = None
+    self._sensor_key = None
     self._light_direction = None
     self._mesh_keys = ()
     self._mesh_indices = ()
     self._active_tiles = ()
-    dr.flush_malloc_cache()
 
   def _update_frame_appearance(
       self,
@@ -638,9 +778,6 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
       frame_alpha = np.asarray(msaa_alpha, dtype=np.float32)
       del image_film
     return frame_rgb, frame_alpha
-
-  def _after_batch_render(self) -> None:
-    dr.flush_malloc_cache()
 
   def _get_tile_bitmap(self, tile: int, max_texture_dim: int) -> mi.Bitmap:
     """Returns a cached `mi.Bitmap` for `tile` at `max_texture_dim`."""
