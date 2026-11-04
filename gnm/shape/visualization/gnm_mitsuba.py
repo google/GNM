@@ -22,6 +22,7 @@ directly.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import threading
 from typing import Any
 
 import cv2
@@ -423,6 +424,67 @@ def _create_mitsuba_sensor(
   return mi.load_dict(sensor_dict)
 
 
+# Mitsuba sensors by variant and film size, see `_get_mitsuba_sensor()`.
+_SENSORS: dict[tuple[str | None, int, int], mi.Sensor] = {}
+# Guards `_SENSORS` and its sensors, whose cameras `render()` updates per frame.
+_SENSORS_LOCK = threading.Lock()
+
+
+def _get_mitsuba_sensor(
+    *,
+    world_to_camera_cv: npt.NDArray[np.float32],
+    camera_to_image_cv: npt.NDArray[np.float32],
+    width: int,
+    height: int,
+    render_width: int,
+    render_height: int,
+) -> tuple[mi.Sensor, mi.SceneParameters]:
+  """Returns the Mitsuba sensor of the film size, set up for the initial frame.
+
+  The sensors are kept for the lifetime of the process instead of being created
+  for every call. A film keeps its crop window in a small device buffer (see
+  `Film::launch_params()`), and the buffer of a new film may be allocated at the
+  address of a freed one. On A100 GPUs (driver 535), OptiX rendering kernels
+  then read the crop window of the freed film in some threads, which shears or
+  blanks the renders. Each sensor also keeps the image storage of its film.
+
+  The caller must hold `_SENSORS_LOCK` while it uses the sensor.
+
+  Args:
+    world_to_camera_cv: The world-to-camera transform (OpenCV convention), (4,
+      4).
+    camera_to_image_cv: The camera-to-image transform (OpenCV convention), (4,
+      4) or (3, 3).
+    width: The target output image width in pixels.
+    height: The target output image height in pixels.
+    render_width: The supersampled film width in pixels.
+    render_height: The supersampled film height in pixels.
+
+  Returns:
+    The sensor and its traversable parameters.
+  """
+  key = (mi.variant(), render_width, render_height)
+  if key not in _SENSORS:
+    _SENSORS[key] = _create_mitsuba_sensor(
+        world_to_camera_cv=world_to_camera_cv,
+        camera_to_image_cv=camera_to_image_cv,
+        width=width,
+        height=height,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    return _SENSORS[key], mi.traverse(_SENSORS[key])
+  sensor_parameters = mi.traverse(_SENSORS[key])
+  _update_mitsuba_sensor(
+      sensor_parameters=sensor_parameters,
+      world_to_camera_cv=world_to_camera_cv,
+      camera_to_image_cv=camera_to_image_cv,
+      width=width,
+      height=height,
+  )
+  return _SENSORS[key], sensor_parameters
+
+
 def _index_optional(
     array: npt.NDArray[np.float32] | None,
     index: int | slice | npt.NDArray[np.int32] | tuple[int | slice, ...],
@@ -756,8 +818,8 @@ def render(
       max_texture_dimension=max(render_width, render_height),
   )
 
-  with dr.suspend_grad():
-    sensor = _create_mitsuba_sensor(
+  with _SENSORS_LOCK, dr.suspend_grad():
+    sensor, sensor_parameters = _get_mitsuba_sensor(
         world_to_camera_cv=world_to_camera[0],
         camera_to_image_cv=camera_to_image[0],
         width=width,
@@ -765,7 +827,6 @@ def render(
         render_width=render_width,
         render_height=render_height,
     )
-    sensor_parameters = mi.traverse(sensor)
 
     scene = _create_mitsuba_scene(
         vertices_frame=vertices[0],
@@ -847,6 +908,4 @@ def render(
       composited_frames.append(np.array(composited_rgb))
       del image_film, composited_rgb
 
-    del scene, scene_parameters, sensor, sensor_parameters
-    dr.flush_malloc_cache()
   return np.array(composited_frames, dtype=np.float32)
