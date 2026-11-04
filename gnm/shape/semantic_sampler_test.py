@@ -57,11 +57,13 @@ class SamplerTest(absltest.TestCase):
     """Tests that ExpressionSampler can randomize expressions."""
     num_samples = 5
     random_expressions = self.expression_sampler.randomize_expressions(
-        num_samples
+        num_samples, rng=np.random.default_rng(42)
     )
     self.assertEqual(
         random_expressions.shape, (num_samples, self.expression_dim)
     )
+    # Mean per-dimension variance across the batch (0 if rows are identical).
+    self.assertGreater(np.var(random_expressions, axis=0).mean(), 1e-2)
 
   def test_identity_sampler_sample_identity(self):
     """Tests that IdentitySampler can sample identities."""
@@ -96,8 +98,12 @@ class SamplerTest(absltest.TestCase):
   def test_identity_sampler_randomize_identities(self):
     """Tests that IdentitySampler can randomize identities."""
     num_samples = 5
-    random_identities = self.identity_sampler.randomize_identities(num_samples)
+    random_identities = self.identity_sampler.randomize_identities(
+        num_samples, rng=np.random.default_rng(42)
+    )
     self.assertEqual(random_identities.shape, (num_samples, self.identity_dim))
+    # Mean per-dimension variance across the batch (0 if rows are identical).
+    self.assertGreater(np.var(random_identities, axis=0).mean(), 1e-1)
 
   def test_deterministic_sampling(self):
     """Tests that sampling with an explicit RNG is deterministic."""
@@ -112,6 +118,14 @@ class SamplerTest(absltest.TestCase):
     expr2 = self.expression_sampler.sample_expression(class_label, rng=rng2)
 
     np.testing.assert_array_equal(expr1, expr2)
+    np.testing.assert_array_equal(
+        self.expression_sampler.randomize_expressions(
+            3, rng=np.random.default_rng(seed)
+        ),
+        self.expression_sampler.randomize_expressions(
+            3, rng=np.random.default_rng(seed)
+        ),
+    )
 
     # Test IdentitySampler
     gender = semantic_sampler.Gender.MALE
@@ -124,6 +138,14 @@ class SamplerTest(absltest.TestCase):
     ident2 = self.identity_sampler.sample_identity(gender, ethnicity, rng=rng4)
 
     np.testing.assert_array_equal(ident1, ident2)
+    np.testing.assert_array_equal(
+        self.identity_sampler.randomize_identities(
+            3, rng=np.random.default_rng(seed)
+        ),
+        self.identity_sampler.randomize_identities(
+            3, rng=np.random.default_rng(seed)
+        ),
+    )
 
   def test_non_deterministic_sampling(self):
     """Tests that sampling without an explicit RNG is non-deterministic."""
@@ -132,6 +154,12 @@ class SamplerTest(absltest.TestCase):
     expr1 = self.expression_sampler.sample_expression(class_label, rng=None)
     expr2 = self.expression_sampler.sample_expression(class_label, rng=None)
     self.assertFalse(np.array_equal(expr1, expr2))
+    self.assertFalse(
+        np.array_equal(
+            self.expression_sampler.randomize_expressions(3, rng=None),
+            self.expression_sampler.randomize_expressions(3, rng=None),
+        )
+    )
 
     # Test IdentitySampler
     gender = semantic_sampler.Gender.MALE
@@ -139,6 +167,12 @@ class SamplerTest(absltest.TestCase):
     ident1 = self.identity_sampler.sample_identity(gender, ethnicity, rng=None)
     ident2 = self.identity_sampler.sample_identity(gender, ethnicity, rng=None)
     self.assertFalse(np.array_equal(ident1, ident2))
+    self.assertFalse(
+        np.array_equal(
+            self.identity_sampler.randomize_identities(3, rng=None),
+            self.identity_sampler.randomize_identities(3, rng=None),
+        )
+    )
 
 
 if __name__ == '__main__':
