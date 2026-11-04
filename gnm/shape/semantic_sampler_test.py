@@ -57,11 +57,13 @@ class SamplerTest(absltest.TestCase):
     """Tests that ExpressionSampler can randomize expressions."""
     num_samples = 5
     random_expressions = self.expression_sampler.randomize_expressions(
-        num_samples
+        num_samples, rng=np.random.default_rng(42)
     )
     self.assertEqual(
         random_expressions.shape, (num_samples, self.expression_dim)
     )
+    # Mean per-dimension variance across the batch (0 if rows are identical).
+    self.assertGreater(np.var(random_expressions, axis=0).mean(), 1e-2)
 
   def test_identity_sampler_sample_identity(self):
     """Tests that IdentitySampler can sample identities."""
@@ -96,8 +98,12 @@ class SamplerTest(absltest.TestCase):
   def test_identity_sampler_randomize_identities(self):
     """Tests that IdentitySampler can randomize identities."""
     num_samples = 5
-    random_identities = self.identity_sampler.randomize_identities(num_samples)
+    random_identities = self.identity_sampler.randomize_identities(
+        num_samples, rng=np.random.default_rng(42)
+    )
     self.assertEqual(random_identities.shape, (num_samples, self.identity_dim))
+    # Mean per-dimension variance across the batch (0 if rows are identical).
+    self.assertGreater(np.var(random_identities, axis=0).mean(), 1e-1)
 
   def test_deterministic_sampling(self):
     """Tests that sampling with an explicit RNG is deterministic."""
