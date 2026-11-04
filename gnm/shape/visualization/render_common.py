@@ -20,12 +20,14 @@ loading, camera/projection helpers and batching utilities.
 """
 
 from collections.abc import Mapping, Sequence
+import dataclasses
 import functools
-from typing import Any, Protocol, overload
+from typing import Any, Protocol, TypeAlias, overload
 import warnings
 
 from etils import epath
 from gnm.shape import gnm_numpy
+from gnm.shape import gnm_typing
 from gnm.shape import gnm_udim
 from gnm.shape.visualization import camera_conversions
 from gnm.shape.visualization import vertex_colors as vertex_colors_module
@@ -34,8 +36,11 @@ import immutabledict
 import numpy as np
 import numpy.typing as npt
 
+enpt = gnm_typing.enpt
+
 FloatArray = npt.NDArray[np.floating]
-ColorOrImage = npt.NDArray[np.uint8] | FloatArray | Sequence[float] | float
+UInt8Array = npt.NDArray[np.uint8]
+ColorOrImage = UInt8Array | FloatArray | Sequence[float] | float
 
 _pkg = __package__ or 'gnm.shape.visualization'
 _TEXTURES_DIR = epath.resource_path(_pkg).parent / 'data' / 'textures'
@@ -65,14 +70,20 @@ DEFAULT_TEXTURE = DefaultTexture()
 # Keying them by GNM part name is deprecated; such a texture is applied to every
 # tile of the part. One `Mapping` per key type, as `Mapping` is invariant in its
 # key: a `dict[int, ...]` is not a `Mapping[int | str, ...]`.
-Texture = (
+Texture: TypeAlias = (
     FloatArray
+    | UInt8Array
     | DefaultTexture
-    | Mapping[gnm_udim.UdimTile, FloatArray]
-    | Mapping[int, FloatArray]
-    | Mapping[np.integer, FloatArray]
-    | Mapping[str, FloatArray]
+    | Mapping[gnm_udim.UdimTile, FloatArray | UInt8Array]
+    | Mapping[int, FloatArray | UInt8Array]
+    | Mapping[np.integer, FloatArray | UInt8Array]
+    | Mapping[str, FloatArray | UInt8Array]
     | None
+)
+TriangleGroups: TypeAlias = (
+    str
+    | Sequence[str]
+    | enpt.IntArray['F_sub']  # pyrefly: ignore[unknown-name]
 )
 
 
@@ -110,6 +121,188 @@ class BackendRenderFn(Protocol):
       verbose: bool = False,
   ) -> FloatArray:
     ...
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MeshRenderOutput:
+  """Output of the stateful GNM 3D mesh renderer.
+
+  Attributes:
+    image: Rendered RGB image as a uint8 NumPy array of shape (..., H, W, 3).
+    alpha: Rendered coverage/opacity mask in [0.0, 1.0] as a float32 NumPy array
+      of shape (..., H, W, 1) after multisample anti-aliasing.
+  """
+
+  image: enpt.ui8['... H W 3']
+  alpha: enpt.FloatArray['... H W 1']
+
+  def composite(
+      self,
+      background: ColorOrImage = DEFAULT_BACKGROUND_COLOR,
+      *,
+      alpha: float = 1.0,
+      dtype: npt.DTypeLike = np.uint8,
+  ) -> enpt.ui8['... H W 3'] | enpt.FloatArray['... H W 3']:
+    """Composites the rendered mesh foreground over a background color or image.
+
+    Args:
+      background: Solid grayscale float, RGB float tuple, or background image
+        array (float32 in [0.0, 1.0] or uint8 in [0, 255]) of shape (..., H, W,
+        3).
+      alpha: Global opacity multiplier in [0.0, 1.0] applied to `self.alpha`.
+      dtype: Output NumPy dtype (`np.uint8` for [0, 255] or floating-point such
+        as `np.float32` for [0.0, 1.0]). Defaults to `np.uint8`.
+
+    Returns:
+      Composited RGB image array of shape (..., H, W, 3) with the requested
+      `dtype`.
+
+    Raises:
+      ValueError: If `background` does not have shape `()`, `(3,)`, or
+        `(..., H, W, 3)`, if batch dimensions of `self.image` and
+        `background` are incompatible, or if `dtype` is neither `np.uint8`
+        nor floating-point.
+    """
+    dtype = np.dtype(dtype)
+    if dtype != np.uint8 and not np.issubdtype(dtype, np.floating):
+      raise ValueError(
+          f'Unsupported output dtype {dtype}; expected np.uint8 or'
+          ' floating-point.'
+      )
+
+    foreground = np.asarray(self.image, dtype=np.float32) / 255.0
+    height, width = foreground.shape[-3:-1]
+    if isinstance(background, np.ndarray) and background.dtype == np.uint8:
+      background = background.astype(np.float32) / 255.0
+    else:
+      background = np.asarray(background, dtype=np.float32)
+
+    if background.ndim == 0:
+      background = np.broadcast_to(background, (height, width, 3))
+    elif background.ndim == 1:
+      if background.shape != (3,):
+        raise ValueError(
+            'Expected 1D background color of shape (3,), got'
+            f' {background.shape}.'
+        )
+      background = np.broadcast_to(background, (height, width, 3))
+    else:
+      if background.ndim < 3 or background.shape[-3:] != (height, width, 3):
+        raise ValueError(
+            'Expected background image trailing dimensions'
+            f' {(height, width, 3)}, got shape {background.shape}.'
+        )
+
+    try:
+      batch_dims = get_batch_dim((foreground, 3), (background, 3))
+    except ValueError as err:
+      raise ValueError(
+          f'Batch dimensions incompatible: image {foreground.shape},'
+          f' background {background.shape}.'
+      ) from err
+
+    alpha_mask = np.broadcast_to(
+        float(alpha) * np.asarray(self.alpha, dtype=np.float32),
+        (*batch_dims, height, width, 1),
+    )
+    foreground = np.broadcast_to(foreground, (*batch_dims, height, width, 3))
+    background = np.broadcast_to(background, (*batch_dims, height, width, 3))
+    composited = foreground * alpha_mask + background * (1.0 - alpha_mask)
+    if dtype == np.uint8:
+      return np.clip(composited * 255.0, 0.0, 255.0).astype(np.uint8)
+    return np.asarray(composited, dtype=dtype)
+
+
+def resolve_gnm_triangles(
+    gnm_np: gnm_numpy.GNM,
+    triangles: TriangleGroups = '~eye_exteriors',
+) -> tuple[enpt.IntArray['F 3'], enpt.FloatArray['F 3 2']]:
+  """Resolves GNM triangle groups or index arrays to faces and UDIM corner UVs.
+
+  Args:
+    gnm_np: NumPy GNM shape model.
+    triangles: Vertex group expression string, sequence of group strings, or 1D
+      face index array.
+
+  Returns:
+    Tuple of `(selected_triangles, selected_triangle_uvs)` where
+    `selected_triangles` is an (F, 3) int32 face index array and
+    `selected_triangle_uvs` is an (F, 3, 2) float32 UDIM corner UV array.
+  """
+  if isinstance(triangles, np.ndarray):
+    triangle_indices = triangles
+  else:
+    group_names = (
+        (triangles,) if isinstance(triangles, str) else tuple(triangles)
+    )
+    triangle_indices = gnm_np.triangle_indices_for_group(*group_names)
+
+  return (
+      np.asarray(gnm_np.triangles[triangle_indices], dtype=np.int32),
+      np.asarray(gnm_np.triangle_uvs_udim[triangle_indices], dtype=np.float32),
+  )
+
+
+def resolve_gnm_camera_and_vertices(
+    gnm_np: gnm_numpy.GNM,
+    vertices: enpt.FloatArray['... V 3'] | None = None,
+    world_to_camera: enpt.FloatArray['... 4 4'] | None = None,
+    camera_to_image: (
+        enpt.FloatArray['... 4 4'] | enpt.FloatArray['... 3 3'] | None
+    ) = None,
+    *,
+    image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
+    multiple_gnms: bool = False,
+) -> tuple[
+    enpt.FloatArray['... V 3'],
+    enpt.FloatArray['... 4 4'],
+    enpt.FloatArray['... 4 4'] | enpt.FloatArray['... 3 3'],
+]:
+  """Resolves default GNM template vertices and OpenCV camera matrices.
+
+  Args:
+    gnm_np: NumPy GNM shape model.
+    vertices: Optional posed vertices of shape (..., [M], V, 3). Defaults to
+      `gnm_np.template_vertex_positions`.
+    world_to_camera: Optional OpenCV world-to-camera matrix of shape (..., 4,
+      4). Defaults to `get_look_at_world_to_camera`.
+    camera_to_image: Optional OpenCV camera-to-image matrix of shape (..., 4, 4)
+      or (..., 3, 3). Defaults to `get_fill_factor_camera_to_image`.
+    image_size: Output image dimensions as (width, height).
+    multiple_gnms: Whether `vertices` includes a leading mesh axis M at
+      dimension -3.
+
+  Returns:
+    Tuple of resolved `(vertices, world_to_camera, camera_to_image)`.
+
+  Raises:
+    ValueError: If `multiple_gnms=True` and `vertices` has fewer than 3
+      dimensions.
+  """
+  if vertices is None:
+    vertices = gnm_np.template_vertex_positions
+  vertices = np.asarray(vertices, dtype=np.float32)
+
+  if multiple_gnms:
+    if (vertices_dim := vertices.ndim) < 3:
+      raise ValueError(
+          f'Called with {multiple_gnms=}, but vertices is only {vertices_dim}D.'
+      )
+    vertices_for_cameras = vertices[..., 0, :, :]
+  else:
+    vertices_for_cameras = vertices
+
+  if world_to_camera is None:
+    world_to_camera = get_look_at_world_to_camera(gnm_np, vertices_for_cameras)
+  world_to_camera = np.asarray(world_to_camera, dtype=np.float32)
+
+  if camera_to_image is None:
+    camera_to_image = get_fill_factor_camera_to_image(
+        gnm_np, vertices_for_cameras, image_size=image_size
+    )
+  camera_to_image = np.asarray(camera_to_image, dtype=np.float32)
+
+  return vertices, world_to_camera, camera_to_image
 
 
 def render_gnm_mesh(
@@ -348,29 +541,16 @@ def project_points_for_gnm(
     points_world = gnm_np.template_vertex_positions
   points_world = points_world.astype(np.float32)
 
-  if vertices is None:
-    vertices = gnm_np.template_vertex_positions
-
+  vertices, world_to_camera, camera_to_image = resolve_gnm_camera_and_vertices(
+      gnm_np,
+      vertices=vertices,
+      world_to_camera=world_to_camera,
+      camera_to_image=camera_to_image,
+      image_size=image_size,
+      multiple_gnms=multiple_gnms,
+  )
   if not multiple_gnms:
-    vertices = vertices[..., np.newaxis, :, :]  # Inject 'M' dimension.
-  elif (vertices_dim := vertices.ndim) < 3:
-    raise ValueError(
-        f'Called with {multiple_gnms=}, but vertices is only {vertices_dim}D.'
-    )
-
-  # Define default camera params based on the first GNM in the 'M' dimension.
-  vertices_for_cameras = vertices[..., 0, :, :]
-
-  if world_to_camera is None:
-    world_to_camera = get_look_at_world_to_camera(
-        gnm_np,
-        vertices_for_cameras,
-    )
-
-  if camera_to_image is None:
-    camera_to_image = get_fill_factor_camera_to_image(
-        gnm_np, vertices_for_cameras, image_size=image_size
-    )
+    vertices = vertices[..., np.newaxis, :, :]
 
   # Convert from OpenCV to OpenGL convention.
   world_to_camera = camera_conversions.opencv_extrinsics_to_opengl(
@@ -828,7 +1008,7 @@ def _vertex_group_mean(
 def load_texture(
     gnm_np: gnm_numpy.GNM,
     texture: Texture = DEFAULT_TEXTURE,
-) -> dict[int, npt.NDArray[np.uint8]]:
+) -> dict[int, UInt8Array]:
   """Loads the texture of each textured UDIM tile as a batchable image.
 
   Args:
@@ -845,39 +1025,32 @@ def load_texture(
     appearance.
 
   Raises:
-    ValueError: If a texture key is not a UDIM tile or part name of the GNM.
+    ValueError: If a texture key is not a UDIM tile or part name of the GNM,
+      or if a texture image has invalid dimensions or channel count.
   """
-  texture_dict = {}
-  if texture is DEFAULT_TEXTURE:
+  if isinstance(texture, DefaultTexture):
     edgeflow_path = EDGEFLOW_TEXTURE_BY_BODY_PART.get(gnm_np.body_part)
-    if edgeflow_path is not None:
-      edgeflow = load_edgeflow_texture(edgeflow_path)
-      if edgeflow is not None:
-        texture_dict[SKIN_UDIM_TILE] = edgeflow[..., np.newaxis]
-  elif isinstance(texture, np.ndarray):
-    texture_dict[SKIN_UDIM_TILE] = texture
-  elif isinstance(texture, Mapping):
-    for key, image in texture.items():
-      for tile in _udim_tiles_of_texture_key(key):
-        texture_dict[tile] = image
+    edgeflow = (
+        load_edgeflow_texture(edgeflow_path)
+        if edgeflow_path is not None
+        else None
+    )
+    resolved_texture = (
+        {SKIN_UDIM_TILE: edgeflow[..., np.newaxis]}
+        if edgeflow is not None
+        else None
+    )
+  else:
+    resolved_texture = texture
+  normalized = _normalize_textures(resolved_texture)
+  if isinstance(texture, Mapping):
     gnm_tiles = sorted(set(gnm_np.triangle_udim_tiles.tolist()))
-    if unknown_tiles := set(texture_dict) - set(gnm_tiles):
+    if unknown_tiles := set(normalized) - set(gnm_tiles):
       raise ValueError(
           f'Texture keys {unknown_tiles} are not UDIM tiles of the GNM'
           f' {gnm_tiles}.'
       )
-
-  def _to_3channel_uint8(
-      texture_image: FloatArray | npt.NDArray[np.uint8],
-  ) -> npt.NDArray[np.uint8]:
-    if texture_image.dtype != np.uint8:
-      texture_image = np.clip(texture_image, 0.0, 1.0) * 255.0
-    texture_image = texture_image.astype(np.uint8, copy=False)
-    if texture_image.shape[-1] == 1:
-      texture_image = np.repeat(texture_image, 3, axis=-1)
-    return texture_image
-
-  return {tile: _to_3channel_uint8(x) for tile, x in texture_dict.items()}
+  return normalized
 
 
 def _udim_tiles_of_texture_key(key: int | np.integer | str) -> list[int]:
@@ -966,3 +1139,80 @@ def get_batch_dim(
     return ()
 
   return np.broadcast_shapes(*batch_dims)
+
+
+def _normalize_textures(
+    texture: Texture,
+    tiles: Sequence[int] = (),
+) -> dict[int, UInt8Array]:
+  """Normalizes a texture input into a per-tile 3-channel uint8 dictionary.
+
+  Args:
+    texture: Optional texture map, array for skin tile, or mapping.
+    tiles: Sequence of required UDIM tiles to fill with white if missing.
+
+  Returns:
+    Dictionary mapping UDIM tile numbers to 3-channel uint8 texture arrays.
+
+  Raises:
+    ValueError: If `texture` is `DefaultTexture`, if a string texture key is
+      not a valid GNM part name, or if a texture image has invalid dimensions
+      or channel count.
+  """
+  if isinstance(texture, DefaultTexture):
+    raise ValueError(
+        'DEFAULT_TEXTURE requires a GNM model; use from_gnm() or'
+        ' load_texture().'
+    )
+  texture_dict: dict[int, np.ndarray] = {}
+  if isinstance(texture, np.ndarray):
+    texture_dict[int(SKIN_UDIM_TILE)] = texture
+  elif isinstance(texture, Mapping):
+    for key, image in texture.items():
+      for tile in _udim_tiles_of_texture_key(key):
+        texture_dict[tile] = image
+
+  for tile in tiles:
+    if int(tile) not in texture_dict:
+      texture_dict[int(tile)] = np.full((1, 1, 3), 255, dtype=np.uint8)
+
+  return {
+      tile: _to_3channel_uint8(image) for tile, image in texture_dict.items()
+  }
+
+
+def _to_3channel_uint8(
+    texture_image: FloatArray | UInt8Array,
+) -> UInt8Array:
+  """Converts a floating-point or uint8 texture image to 3-channel uint8.
+
+  Args:
+    texture_image: Input texture image array.
+
+  Returns:
+    3-channel uint8 texture image array.
+
+  Raises:
+    ValueError: If `texture_image` has fewer than 2 dimensions or its
+      channel count is not 1, 3, or 4.
+  """
+  if texture_image.ndim < 2:
+    raise ValueError(
+        'Expected texture_image with at least 2 dimensions, got shape'
+        f' {texture_image.shape}.'
+    )
+  if texture_image.dtype != np.uint8:
+    texture_image = np.clip(texture_image, 0.0, 1.0) * 255.0
+  texture_image = texture_image.astype(np.uint8, copy=False)
+  if texture_image.ndim == 2:
+    texture_image = texture_image[..., np.newaxis]
+  if texture_image.shape[-1] == 1:
+    texture_image = np.repeat(texture_image, 3, axis=-1)
+  elif texture_image.shape[-1] == 4:
+    texture_image = texture_image[..., :3]
+  elif texture_image.shape[-1] != 3:
+    raise ValueError(
+        'Expected texture_image with 1, 3, or 4 channels, got shape'
+        f' {texture_image.shape}.'
+    )
+  return texture_image
