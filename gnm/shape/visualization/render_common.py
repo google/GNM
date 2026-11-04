@@ -19,10 +19,11 @@ different `render_gnm` implementations: default scene parameters, texture
 loading, camera/projection helpers and batching utilities.
 """
 
+import abc
 from collections.abc import Mapping, Sequence
 import dataclasses
 import functools
-from typing import Any, Protocol, TypeAlias, overload
+from typing import Any, ClassVar, Protocol, Self, TypeAlias, overload
 import warnings
 
 from etils import epath
@@ -30,11 +31,13 @@ from gnm.shape import gnm_numpy
 from gnm.shape import gnm_typing
 from gnm.shape import gnm_udim
 from gnm.shape.visualization import camera_conversions
+from gnm.shape.visualization import udim
 from gnm.shape.visualization import vertex_colors as vertex_colors_module
 import imageio
 import immutabledict
 import numpy as np
 import numpy.typing as npt
+import tqdm.autonotebook as tqdm
 
 enpt = gnm_typing.enpt
 
@@ -498,6 +501,510 @@ def render_gnm_mesh(
 
   color = renders.reshape(*batch_dims, height, width, 3)
   return color
+
+
+@dataclasses.dataclass(kw_only=True)
+class BaseGNMMeshRenderer(abc.ABC):
+  """Abstract base class for stateful 3D mesh renderers.
+
+  Caches static mesh topology, UDIM corner UV coordinates, vertex colors, and
+  loaded UDIM tile textures across frames and repeated render calls.
+
+  Attributes:
+    triangles: Active triangle face index array of shape (F, 3).
+    triangle_uvs: Per-corner UV texture coordinates in UDIM layout of shape (F,
+      3, 2).
+    vertex_colors: Per-vertex RGB colors of shape (..., V, 3).
+    texture: Optional per-UDIM-tile texture mapping, single array for
+      `SKIN_UDIM_TILE`, or None to use plain white textures.
+    multisample_antialiasing: Supersampling factor for anti-aliasing. Defaults
+      to 1 (native resolution).
+    include_shading: Whether to include directional lighting/shading. Defaults
+      to True.
+    verbose: Default flag controlling whether to display a progress bar.
+  """
+
+  _progress_bar_desc: ClassVar[str] = 'Rendering'
+
+  triangles: enpt.IntArray['F 3']
+  triangle_uvs: enpt.FloatArray['F 3 2']
+  vertex_colors: enpt.FloatArray['... V 3']
+  texture: Texture = None
+  multisample_antialiasing: int = 1
+  include_shading: bool = True
+  verbose: bool = False
+
+  _tile_geometry: dict[int, udim.TileGeometry] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _active_vertex_colors: enpt.FloatArray['... V 3'] = dataclasses.field(
+      default_factory=lambda: np.empty((0, 3), dtype=np.float32),
+      init=False,
+      repr=False,
+      compare=False,
+  )
+  _raw_textures: dict[int, enpt.ui8['... H_texture W_texture 3']] = (
+      dataclasses.field(
+          default_factory=dict, init=False, repr=False, compare=False
+      )
+  )
+  _active_textures: dict[int, enpt.ui8['H_texture W_texture 3']] = (
+      dataclasses.field(
+          default_factory=dict, init=False, repr=False, compare=False
+      )
+  )
+  _cached_world_to_camera: enpt.FloatArray['4 4'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_camera_to_image: (
+      enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'] | None
+  ) = dataclasses.field(default=None, init=False, repr=False, compare=False)
+  _cached_image_size: tuple[int, int] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+
+  @classmethod
+  def from_gnm(
+      cls,
+      gnm_np: gnm_numpy.GNM,
+      *,
+      triangles: TriangleGroups = '~eye_exteriors',
+      texture: Texture = DEFAULT_TEXTURE,
+      multisample_antialiasing: int = 1,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      include_shading: bool = True,
+      verbose: bool = False,
+  ) -> Self:
+    """Instantiates a mesh renderer from a NumPy GNM shape model.
+
+    Args:
+      gnm_np: NumPy GNM shape model.
+      triangles: Vertex group expression string, sequence of group strings, or
+        1D face index array.
+      texture: Optional per-UDIM-tile texture mapping, single array for
+        `SKIN_UDIM_TILE`, `DEFAULT_TEXTURE` for the default edgeflow texture, or
+        None for plain white textures.
+      multisample_antialiasing: Supersampling factor for anti-aliasing. Defaults
+        to 1 (native resolution).
+      vertex_colors: Optional per-vertex RGB colors of shape (..., V, 3).
+        Defaults to standard GNM per-component vertex colors.
+      include_shading: Whether to include directional lighting/shading. Defaults
+        to True.
+      verbose: Default flag controlling whether to display a progress bar.
+
+    Returns:
+      A new renderer instance configured with the GNM model's mesh topology,
+      UDIM corner UV coordinates, vertex colors, and textures.
+    """
+    selected_triangles, selected_triangle_uvs = resolve_gnm_triangles(
+        gnm_np, triangles
+    )
+    if vertex_colors is None:
+      vertex_colors = vertex_colors_module.get_vertex_colors(
+          gnm_np, vertex_colors_module.DEFAULT_COLOR
+      )
+    return cls(
+        triangles=selected_triangles,
+        triangle_uvs=selected_triangle_uvs,
+        vertex_colors=np.asarray(vertex_colors, dtype=np.float32),
+        texture=load_texture(gnm_np, texture),
+        multisample_antialiasing=multisample_antialiasing,
+        include_shading=include_shading,
+        verbose=verbose,
+    )
+
+  def __post_init__(self) -> None:
+    triangles = np.asarray(self.triangles, dtype=np.int32)
+    triangle_uvs = np.asarray(self.triangle_uvs, dtype=np.float32)
+    self.triangles = triangles
+    self.triangle_uvs = triangle_uvs
+
+    tile_geometry = udim.build_tile_geometry(triangles, triangle_uvs)
+    self._tile_geometry = tile_geometry
+
+    normalized_colors = np.asarray(self.vertex_colors, dtype=np.float32)
+    self.vertex_colors = normalized_colors
+    self._active_vertex_colors = normalized_colors
+
+    loaded_textures = _normalize_textures(
+        self.texture, tuple(tile_geometry.keys())
+    )
+    self._raw_textures = loaded_textures
+    self._active_textures = {
+        tile: (
+            raw_texture
+            if raw_texture.ndim == 3
+            else raw_texture.reshape(-1, *raw_texture.shape[-3:])[0]
+        )
+        for tile, raw_texture in loaded_textures.items()
+    }
+
+  def update_triangles(
+      self,
+      triangles: enpt.IntArray['F 3'],
+      triangle_uvs: enpt.FloatArray['F 3 2'] | None = None,
+  ) -> None:
+    """Updates active mesh triangles and UVs and syncs backend state."""
+    new_triangles = np.asarray(triangles, dtype=np.int32)
+    new_triangle_uvs = (
+        self.triangle_uvs
+        if triangle_uvs is None
+        else np.asarray(triangle_uvs, dtype=np.float32)
+    )
+
+    if np.array_equal(self.triangles, new_triangles) and np.array_equal(
+        self.triangle_uvs, new_triangle_uvs
+    ):
+      return
+
+    tile_geometry = udim.build_tile_geometry(new_triangles, new_triangle_uvs)
+    self.triangles = new_triangles
+    self.triangle_uvs = new_triangle_uvs
+    self._tile_geometry = tile_geometry
+
+    for tile in tile_geometry:
+      if tile not in self._raw_textures:
+        self._raw_textures[tile] = np.full((1, 1, 3), 255, dtype=np.uint8)
+        self._active_textures[tile] = self._raw_textures[tile]
+
+    self._on_triangles_updated()
+
+  @abc.abstractmethod
+  def update_vertices(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      *,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates scene mesh vertices and normals in-place."""
+
+  @abc.abstractmethod
+  def update_camera(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates camera pose and projection matrices in OpenCV convention."""
+
+  def render(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      world_to_camera: enpt.FloatArray['... 4 4'],
+      camera_to_image: enpt.FloatArray['... 4 4'] | enpt.FloatArray['... 3 3'],
+      *,
+      image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE,
+      triangles: enpt.IntArray['F 3'] | None = None,
+      triangle_uvs: enpt.FloatArray['F 3 2'] | None = None,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      multiple_gnms: bool = False,
+      verbose: bool = False,
+  ) -> MeshRenderOutput:
+    """Renders single-frame or batched 3D GNM meshes.
+
+    Args:
+      vertices: 3D mesh vertices of shape (..., [M], V, 3).
+      world_to_camera: OpenCV world-to-camera matrices of shape (..., 4, 4).
+      camera_to_image: OpenCV camera-to-image matrices of shape (..., 4, 4) or
+        (..., 3, 3).
+      image_size: Output image dimensions as (width, height).
+      triangles: Optional active triangle face index array of shape (F, 3) to
+        update `self.triangles` via `update_triangles` before rendering.
+      triangle_uvs: Optional per-corner UV texture coordinates in UDIM layout of
+        shape (F, 3, 2) to update `self.triangle_uvs` before rendering.
+      vertex_colors: Optional per-vertex RGB colors override of shape (..., [M],
+        V, 3).
+      vertex_normals: Optional precomputed vertex normals of shape (..., [M], V,
+        3). If None, computed via `gnm_numpy.compute_vertex_normals`.
+      multiple_gnms: If True, `vertices` has shape (..., M, V, 3) with M meshes
+        per frame.
+      verbose: Whether to display a progress bar for this call, overriding the
+        `self.verbose` attribute.
+
+    Returns:
+      A `MeshRenderOutput` containing the rendered uint8 RGB image of shape
+      (..., height, width, 3) and float32 coverage mask in [0.0, 1.0] of shape
+      (..., height, width, 1).
+
+    Raises:
+      ValueError: If `multiple_gnms=True` and `vertices` or `vertex_normals` is
+        < 3D, or if batch dimensions are incompatible.
+    """
+    if triangles is not None or triangle_uvs is not None:
+      self.update_triangles(
+          self.triangles if triangles is None else triangles, triangle_uvs
+      )
+
+    verbose = verbose or self.verbose
+    vertices = np.asarray(vertices, dtype=np.float32)
+
+    # Ensure vertices always has an explicit mesh dimension M at axis -3:
+    # shape (..., M, V, 3), where M=1 when multiple_gnms is False.
+    if not multiple_gnms:
+      vertices = vertices[..., np.newaxis, :, :]  # Inject 'M' dimension.
+    elif (vertices_dim := vertices.ndim) < 3:
+      raise ValueError(
+          f'Called with {multiple_gnms=}, but vertices is only {vertices_dim}D.'
+      )
+
+    num_meshes = int(vertices.shape[-3])
+
+    if vertex_colors is None:
+      vertex_colors = self.vertex_colors
+    else:
+      vertex_colors = np.asarray(vertex_colors, dtype=np.float32)
+
+    vertex_colors = _align_mesh_attribute(
+        vertex_colors,
+        num_meshes=num_meshes,
+        multiple_gnms=multiple_gnms,
+        allow_2d_with_multiple_gnms=True,
+        attribute_name='vertex_colors',
+        vertices_shape=vertices.shape,
+    )
+
+    if vertex_normals is not None:
+      vertex_normals = np.asarray(vertex_normals, dtype=np.float32)
+      vertex_normals = _align_mesh_attribute(
+          vertex_normals,
+          num_meshes=num_meshes,
+          multiple_gnms=multiple_gnms,
+          allow_2d_with_multiple_gnms=False,
+          attribute_name='vertex_normals',
+          vertices_shape=vertices.shape,
+      )
+
+    world_to_camera = np.asarray(world_to_camera, dtype=np.float32)
+    camera_to_image = np.asarray(camera_to_image, dtype=np.float32)
+
+    width, height = int(image_size[0]), int(image_size[1])
+    image_size = (width, height)
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+    max_texture_dim = max(render_width, render_height)
+
+    # Compute the common broadcast batch shape across vertices, colors,
+    # normals, cameras, and any batched texture maps.
+    textures_list = list(self._raw_textures.values())
+    try:
+      batch_dims = get_batch_dim(
+          (vertices, 3),
+          (vertex_colors, 3),
+          (vertex_normals, 3),
+          (world_to_camera, 2),
+          (camera_to_image, 2),
+          *[(texture_array, 3) for texture_array in textures_list],
+      )
+    except ValueError as err:
+      raise ValueError(
+          f' Batch dimensions incompatible: vertices {vertices.shape},'
+          f' vertex_colors {vertex_colors.shape}, world_to_camera'
+          f' {world_to_camera.shape}, camera_to_image'
+          f' {camera_to_image.shape}, texture'
+          f' {[texture_array.shape for texture_array in textures_list]}.'
+      ) from err
+
+    num_frames = int(np.prod(batch_dims)) if batch_dims else 1
+
+    # Compute per-vertex normals when not explicitly provided.
+    if vertex_normals is None:
+      vertex_normals = gnm_numpy.compute_vertex_normals(
+          vertices, self.triangles
+      )
+
+    def batchify[ScalarT: np.generic](
+        arr: npt.NDArray[ScalarT], non_batch_dims: int
+    ) -> npt.NDArray[ScalarT]:
+      """Broadcasts to batch dimensions, and flattens the batch dimensions."""
+      arr = np.broadcast_to(arr, (*batch_dims, *arr.shape[-non_batch_dims:]))
+      return arr.reshape(num_frames, *arr.shape[-non_batch_dims:])
+
+    vertices = batchify(vertices, 3)
+    vertex_normals = batchify(vertex_normals, 3)
+    vertex_colors = batchify(vertex_colors, 3)
+    world_to_camera = batchify(world_to_camera, 2)
+    camera_to_image = batchify(camera_to_image, 2)
+
+    if num_meshes == 1:
+      vertices = vertices[:, 0]
+      vertex_normals = vertex_normals[:, 0]
+      vertex_colors = vertex_colors[:, 0]
+
+    # Only broadcast texture maps across frames when at least one part texture
+    # varies across the batch.
+    has_multi_frame_textures = any(
+        texture_array.ndim > 3 and int(np.prod(texture_array.shape[:-3])) > 1
+        for texture_array in textures_list
+    )
+    batched_textures: dict[int, enpt.ui8['N H_texture W_texture 3']] = {}
+    if has_multi_frame_textures:
+      batched_textures = {
+          tile: batchify(texture_array, 3)
+          for tile, texture_array in self._raw_textures.items()
+      }
+
+    foreground_frames: list[enpt.FloatArray['H W 3']] = []
+    alpha_frames: list[enpt.FloatArray['H W 1']] = []
+    frame_inputs = tqdm.tqdm(
+        zip(
+            vertices,
+            vertex_normals,
+            vertex_colors,
+            world_to_camera,
+            camera_to_image,
+        ),
+        total=num_frames,
+        disable=not verbose,
+        desc=self._progress_bar_desc,
+        leave=False,
+    )
+
+    for frame_index, (
+        frame_vertices,
+        frame_normals,
+        frame_colors,
+        frame_world_to_camera,
+        frame_camera_to_image,
+    ) in enumerate(frame_inputs):
+      # Sync per-frame vertex colors and textures to the backend only when they
+      # differ from the currently active appearance state.
+      should_sync_colors = not np.array_equal(
+          frame_colors, self._active_vertex_colors
+      )
+      frame_texture_map: dict[int, enpt.ui8['H_texture W_texture 3']] | None = (
+          None
+      )
+      if has_multi_frame_textures:
+        changed_textures: dict[int, enpt.ui8['H_texture W_texture 3']] = {}
+        for tile, texture_frames in batched_textures.items():
+          texture_frame = texture_frames[frame_index]
+          if not np.array_equal(texture_frame, self._active_textures[tile]):
+            changed_textures[tile] = texture_frame
+        if changed_textures:
+          frame_texture_map = changed_textures
+
+      if should_sync_colors or frame_texture_map is not None:
+        self._update_frame_appearance(
+            vertex_colors=frame_colors if should_sync_colors else None,
+            frame_textures=frame_texture_map,
+            max_texture_dim=max_texture_dim,
+        )
+
+      # Update camera pose/intrinsics and mesh geometry for the current frame.
+      self.update_camera(
+          world_to_camera=frame_world_to_camera,
+          camera_to_image=frame_camera_to_image,
+          image_size=image_size,
+      )
+      self.update_vertices(
+          vertices=frame_vertices,
+          vertex_normals=frame_normals,
+          max_texture_dim=max_texture_dim,
+      )
+      frame_rgb, frame_alpha = self._render_single_frame(
+          width=width, height=height
+      )
+      foreground_frames.append(frame_rgb)
+      alpha_frames.append(frame_alpha)
+
+    self._after_batch_render()
+
+    # Reshape rendered frames back to the original leading batch dimensions.
+    stacked_foreground = np.stack(foreground_frames, axis=0).reshape(
+        *batch_dims, height, width, 3
+    )
+    stacked_alpha = np.stack(alpha_frames, axis=0).reshape(
+        *batch_dims, height, width, 1
+    )
+    foreground_uint8 = np.clip(stacked_foreground * 255.0, 0.0, 255.0).astype(
+        np.uint8
+    )
+    return MeshRenderOutput(image=foreground_uint8, alpha=stacked_alpha)
+
+  def close(self) -> None:
+    """Releases any persistent backend rendering resources."""
+    self._cached_world_to_camera = None
+    self._cached_camera_to_image = None
+    self._cached_image_size = None
+
+  def _update_frame_appearance(
+      self,
+      *,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      frame_textures: (
+          Mapping[int, enpt.ui8['H_texture W_texture 3']] | None
+      ) = None,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates active per-frame vertex colors and textures."""
+    del max_texture_dim
+    if vertex_colors is not None:
+      self._active_vertex_colors = np.asarray(vertex_colors, dtype=np.float32)
+    if frame_textures is not None:
+      for tile, texture_frame in frame_textures.items():
+        self._active_textures[tile] = texture_frame
+
+  @abc.abstractmethod
+  def _on_triangles_updated(self) -> None:
+    """Syncs or invalidates backend state after `self.triangles` changes."""
+
+  @abc.abstractmethod
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[enpt.FloatArray['H W 3'], enpt.FloatArray['H W 1']]:
+    """Renders the current scene state for one frame at (height, width)."""
+
+  def _after_batch_render(self) -> None:
+    """Hook invoked once after completing a batch of frame renders."""
+
+  def _prepare_vertices_and_normals(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+  ) -> tuple[enpt.FloatArray['M V 3'], enpt.FloatArray['M V 3']]:
+    """Normalizes vertices and vertex normals to shape (M, V, 3)."""
+    vertices = np.asarray(vertices, dtype=np.float32)
+    if vertices.ndim == 2:
+      vertices = vertices[np.newaxis, :, :]
+    if vertex_normals is None:
+      vertex_normals = gnm_numpy.compute_vertex_normals(
+          vertices, self.triangles
+      )
+    else:
+      vertex_normals = np.asarray(vertex_normals, dtype=np.float32)
+      if vertex_normals.ndim == 2:
+        vertex_normals = vertex_normals[np.newaxis, :, :]
+    return vertices, vertex_normals
+
+  def _is_camera_cached(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> bool:
+    """Returns True if camera matrices and image_size match cached state."""
+    return (
+        self._cached_image_size == image_size
+        and self._cached_world_to_camera is not None
+        and self._cached_camera_to_image is not None
+        and np.array_equal(self._cached_world_to_camera, world_to_camera)
+        and np.array_equal(self._cached_camera_to_image, camera_to_image)
+    )
+
+  def _cache_camera(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> None:
+    """Caches copies of the camera matrices and image_size."""
+    self._cached_world_to_camera = world_to_camera.copy()
+    self._cached_camera_to_image = camera_to_image.copy()
+    self._cached_image_size = image_size
 
 
 def project_points_for_gnm(
@@ -1216,3 +1723,51 @@ def _to_3channel_uint8(
         f' {texture_image.shape}.'
     )
   return texture_image
+
+
+def _align_mesh_attribute(
+    attribute: enpt.FloatArray['... V 3'],
+    *,
+    num_meshes: int,
+    multiple_gnms: bool,
+    allow_2d_with_multiple_gnms: bool,
+    attribute_name: str,
+    vertices_shape: tuple[int, ...],
+) -> enpt.FloatArray['... M V 3']:
+  """Aligns a per-vertex attribute to shape (..., M, V, 3).
+
+  Args:
+    attribute: Per-vertex attribute array of shape (..., [M], V, 3).
+    num_meshes: Number of meshes M in `vertices`.
+    multiple_gnms: Whether `vertices` includes an explicit mesh axis M.
+    allow_2d_with_multiple_gnms: Whether a 2D (V, 3) array may be broadcast
+      across M when `multiple_gnms=True`.
+    attribute_name: Attribute name for error messages ('vertex_colors' or
+      'vertex_normals').
+    vertices_shape: Shape of `vertices` for error messages.
+
+  Returns:
+    Attribute array aligned to shape (..., M, V, 3).
+
+  Raises:
+    ValueError: If `multiple_gnms=True` and `attribute` is < 3D (when
+      `allow_2d_with_multiple_gnms=False`), or if axis -3 is incompatible with
+      `num_meshes`.
+  """
+  if not multiple_gnms or (allow_2d_with_multiple_gnms and attribute.ndim == 2):
+    attribute = attribute[..., np.newaxis, :, :]
+  elif (attribute_dim := attribute.ndim) < 3:
+    raise ValueError(
+        f'Called with {multiple_gnms=}, but {attribute_name} is only'
+        f' {attribute_dim}D.'
+    )
+  if attribute.shape[-3] not in (1, num_meshes):
+    raise ValueError(
+        f'Batch dimensions incompatible: vertices {vertices_shape},'
+        f' {attribute_name} {attribute.shape}.'
+    )
+  if attribute.shape[-3] != num_meshes:
+    target_shape = list(attribute.shape)
+    target_shape[-3] = num_meshes
+    attribute = np.broadcast_to(attribute, target_shape)
+  return attribute

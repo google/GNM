@@ -23,12 +23,15 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from gnm.shape import gnm_numpy
 from gnm.shape import gnm_test_utils
+from gnm.shape import gnm_typing
 from gnm.shape import gnm_udim
 from gnm.shape.data.versions import gnm_test_catalog
 from gnm.shape.visualization import camera_conversions
 from gnm.shape.visualization import render_common
 import numpy as np
 import numpy.typing as npt
+
+enpt = gnm_typing.enpt
 
 _TupleOfInts = tuple[int, ...]
 
@@ -661,6 +664,39 @@ class TestMeshRenderOutput(parameterized.TestCase):
       output.composite(dtype=np.int32)
 
 
+class _DummyGNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Dummy concrete subclass of BaseGNMMeshRenderer for testing."""
+
+  def update_vertices(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      *,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    del vertices, vertex_normals, max_texture_dim
+
+  def update_camera(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> None:
+    del world_to_camera, camera_to_image, image_size
+
+  def _on_triangles_updated(self) -> None:
+    pass
+
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[enpt.FloatArray['H W 3'], enpt.FloatArray['H W 1']]:
+    rendered_rgb = np.ones((height, width, 3), dtype=np.float32)
+    rendered_alpha = np.ones((height, width, 1), dtype=np.float32)
+    return rendered_rgb, rendered_alpha
+
+
 class TestResolveGNMTriangles(parameterized.TestCase):
   """Tests for resolve_gnm_triangles."""
 
@@ -880,6 +916,396 @@ class TestResolveGNMCameraAndVertices(parameterized.TestCase):
     self.assertEqual(vertices.shape, (2, num_vertices, 3))
     self.assertEqual(world_to_camera.shape, (4, 4))
     self.assertEqual(camera_to_image.shape, (4, 4))
+
+
+class TestBaseGNMMeshRenderer(parameterized.TestCase):
+  """Tests for BaseGNMMeshRenderer."""
+
+  gnm_np: gnm_numpy.GNM
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.gnm_np = _load_head_gnms()[
+        gnm_test_catalog.MAINTAINED_MAJOR_VERSIONS[0]
+    ]
+
+  def test_post_init_caches(self):
+    """Tests that __post_init__ populates cached topology, colors, UVs, tex."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    self.assertIsInstance(renderer.triangles, np.ndarray)
+    self.assertEqual(renderer.triangles.shape[-1], 3)
+    self.assertEqual(renderer.triangle_uvs.shape[-1], 2)
+    self.assertEqual(renderer.vertex_colors.shape[-1], 3)
+    self.assertIsInstance(renderer._tile_geometry, dict)
+    self.assertIsInstance(renderer._raw_textures, dict)
+
+  def test_direct_construction(self):
+    """Tests direct constructor instantiation with pre-resolved mesh arrays."""
+    triangles = np.array([[0, 1, 2], [2, 3, 0], [4, 5, 6]], dtype=np.int32)
+    triangle_uvs = np.zeros((3, 3, 2), dtype=np.float32)
+    vertex_colors = np.ones((7, 3), dtype=np.float32)
+    texture = {
+        int(gnm_udim.UdimTile.SKIN): np.full((16, 16, 3), 128, dtype=np.uint8),
+    }
+    renderer = _DummyGNMMeshRenderer(
+        triangles=triangles,
+        triangle_uvs=triangle_uvs,
+        vertex_colors=vertex_colors,
+        texture=texture,
+    )
+    np.testing.assert_array_equal(renderer.triangles, triangles)
+    np.testing.assert_allclose(renderer.triangle_uvs, triangle_uvs)
+    np.testing.assert_allclose(renderer.vertex_colors, vertex_colors)
+    self.assertIn(int(gnm_udim.UdimTile.SKIN), renderer._raw_textures)
+    self.assertIn(int(gnm_udim.UdimTile.SKIN), renderer._tile_geometry)
+    render_output = renderer.render(
+        vertices=np.zeros((7, 3), dtype=np.float32),
+        world_to_camera=np.eye(4, dtype=np.float32),
+        camera_to_image=np.eye(4, dtype=np.float32),
+        image_size=(32, 24),
+        vertex_normals=np.zeros((7, 3), dtype=np.float32),
+    )
+    self.assertEqual(render_output.image.shape, (24, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (24, 32, 1))
+    renderer.close()
+
+  def test_from_gnm(self):
+    """Tests from_gnm factory method construction and rendering."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    self.assertIsInstance(renderer.triangles, np.ndarray)
+    self.assertIsInstance(renderer._tile_geometry, dict)
+    self.assertNotEmpty(renderer._tile_geometry)
+
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np, image_size=(32, 24)
+        )
+    )
+    render_output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=(32, 24),
+    )
+    self.assertIsInstance(render_output, render_common.MeshRenderOutput)
+    self.assertEqual(render_output.image.shape, (24, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (24, 32, 1))
+    self.assertEqual(render_output.image.dtype, np.uint8)
+    self.assertEqual(render_output.alpha.dtype, np.float32)
+    renderer.close()
+
+  def test_render_batched(self):
+    """Tests render method with batched vertices."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    template_vertices = self.gnm_np.template_vertex_positions
+    batched_vertices = np.broadcast_to(
+        template_vertices, (2, 3, *template_vertices.shape)
+    )
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np, vertices=batched_vertices, image_size=(16, 12)
+        )
+    )
+    render_output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=(16, 12),
+    )
+    self.assertEqual(render_output.image.shape, (2, 3, 12, 16, 3))
+    self.assertEqual(render_output.alpha.shape, (2, 3, 12, 16, 1))
+
+  def test_render_triangles_override(self):
+    """Tests render method with triangles and triangle_uvs override."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np, image_size=(16, 12)
+        )
+    )
+    new_triangles, new_triangle_uvs = render_common.resolve_gnm_triangles(
+        self.gnm_np, ('~eye_exteriors', '-teeth')
+    )
+    render_output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        triangles=new_triangles,
+        triangle_uvs=new_triangle_uvs,
+        image_size=(16, 12),
+    )
+    np.testing.assert_array_equal(renderer.triangles, new_triangles)
+    np.testing.assert_allclose(renderer.triangle_uvs, new_triangle_uvs)
+    self.assertEqual(render_output.image.shape, (12, 16, 3))
+
+  def test_update_triangles_with_resolved_mapping(self):
+    """Tests updating triangles and triangle_uvs."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    resolved_default_triangles, resolved_default_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, '~eye_exteriors')
+    )
+    # Updating with identical triangles is a no-op.
+    renderer.update_triangles(resolved_default_triangles, resolved_default_uvs)
+    np.testing.assert_array_equal(
+        renderer.triangles, resolved_default_triangles
+    )
+    resolved_new_triangles, resolved_new_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, ('skin', '-left_eye'))
+    )
+    renderer.update_triangles(resolved_new_triangles, resolved_new_uvs)
+    np.testing.assert_array_equal(renderer.triangles, resolved_new_triangles)
+    np.testing.assert_allclose(renderer.triangle_uvs, resolved_new_uvs)
+    self.assertIsInstance(renderer._tile_geometry, dict)
+
+  def test_progress_bar_desc_class_var(self):
+    """Tests that _progress_bar_desc is a class attribute."""
+    self.assertEqual(_DummyGNMMeshRenderer._progress_bar_desc, 'Rendering')
+
+  def test_render_multiple_gnms_and_vertex_colors(self):
+    """Tests render method with multiple GNMs, RGB colors, and normals."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    template_vertices = self.gnm_np.template_vertex_positions
+    num_vertices = template_vertices.shape[0]
+
+    # Multiple GNMs with shape (batch, M, V, 3).
+    vertices_multi = np.broadcast_to(template_vertices, (2, 3, num_vertices, 3))
+    resolved_vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np,
+            vertices=vertices_multi,
+            image_size=(32, 24),
+            multiple_gnms=True,
+        )
+    )
+    # 3-channel RGB vertex colors with explicit M=3 and singleton M=1.
+    vertex_colors_rgb = np.ones((2, 3, num_vertices, 3), dtype=np.float32)
+    face_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+    selected_triangles, selected_triangle_uvs = (
+        render_common.resolve_gnm_triangles(self.gnm_np, face_indices)
+    )
+
+    render_output = renderer.render(
+        vertices=resolved_vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        vertex_colors=vertex_colors_rgb,
+        triangles=selected_triangles,
+        triangle_uvs=selected_triangle_uvs,
+        multiple_gnms=True,
+        image_size=(32, 24),
+    )
+    self.assertEqual(render_output.image.shape, (2, 24, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (2, 24, 32, 1))
+
+    # Singleton mesh axis (2, 1, V, 3) broadcasts across M=3 meshes.
+    singleton_mesh_colors = np.ones((2, 1, num_vertices, 3), dtype=np.float32)
+    singleton_mesh_output = renderer.render(
+        vertices=resolved_vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        vertex_colors=singleton_mesh_colors,
+        multiple_gnms=True,
+        image_size=(32, 24),
+    )
+    self.assertEqual(singleton_mesh_output.image.shape, (2, 24, 32, 3))
+
+    # Singleton batch axis (1, V, 3) with multiple_gnms=False broadcasts across
+    # batched vertices (2, V, 3), and unbatched vertex_normals (V, 3) broadcasts
+    # across batched vertices (2, V, 3).
+    batched_single_mesh = np.broadcast_to(
+        template_vertices, (2, num_vertices, 3)
+    )
+    singleton_batch_colors = np.ones((1, num_vertices, 3), dtype=np.float32)
+    unbatched_normals = np.ones((num_vertices, 3), dtype=np.float32)
+    single_mesh_output = renderer.render(
+        vertices=batched_single_mesh,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        vertex_colors=singleton_batch_colors,
+        vertex_normals=unbatched_normals,
+        multiple_gnms=False,
+        image_size=(32, 24),
+    )
+    self.assertEqual(single_mesh_output.image.shape, (2, 24, 32, 3))
+
+    # Error: multiple_gnms=True with 2D vertices.
+    with self.assertRaisesRegex(ValueError, 'Called with multiple_gnms=True'):
+      renderer.render(
+          vertices=template_vertices,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          multiple_gnms=True,
+      )
+
+    # Error: multiple_gnms=True with 2D vertex_normals.
+    with self.assertRaisesRegex(ValueError, 'Called with multiple_gnms=True'):
+      renderer.render(
+          vertices=resolved_vertices,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          vertex_normals=unbatched_normals,
+          multiple_gnms=True,
+      )
+
+    # Error: incompatible batch dimensions on world_to_camera or vertex_normals.
+    incompatible_world_to_camera = np.zeros((5, 4, 4), dtype=np.float32)
+    with self.assertRaisesRegex(ValueError, 'Batch dimensions incompatible'):
+      renderer.render(
+          vertices=resolved_vertices,
+          world_to_camera=incompatible_world_to_camera,
+          camera_to_image=camera_to_image,
+          multiple_gnms=True,
+      )
+    incompatible_normals = np.zeros((5, num_vertices, 3), dtype=np.float32)
+    with self.assertRaisesRegex(ValueError, 'Batch dimensions incompatible'):
+      renderer.render(
+          vertices=batched_single_mesh,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          vertex_normals=incompatible_normals,
+          multiple_gnms=False,
+      )
+
+  def test_prepare_vertices_and_normals_2d_computed(self):
+    """Tests _prepare_vertices_and_normals with 2D vertices and None normals."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    vertices_2d = self.gnm_np.template_vertex_positions
+    num_vertices = vertices_2d.shape[0]
+
+    vertices_m, normals_m = renderer._prepare_vertices_and_normals(vertices_2d)
+    self.assertEqual(vertices_m.shape, (1, num_vertices, 3))
+    self.assertEqual(normals_m.shape, (1, num_vertices, 3))
+    self.assertEqual(vertices_m.dtype, np.float32)
+    self.assertEqual(normals_m.dtype, np.float32)
+    np.testing.assert_allclose(vertices_m[0], vertices_2d)
+    expected_normals = gnm_numpy.compute_vertex_normals(
+        vertices_m, renderer.triangles
+    )
+    np.testing.assert_allclose(normals_m, expected_normals)
+    gnm_expected = self.gnm_np.compute_vertex_normals(vertices_m)
+    np.testing.assert_allclose(
+        gnm_numpy.compute_vertex_normals(vertices_m, self.gnm_np.triangles),
+        gnm_expected,
+        atol=1e-5,
+    )
+
+  def test_prepare_vertices_and_normals_3d_explicit(self):
+    """Tests _prepare_vertices_and_normals with 3D vertices and normals."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    vertices_2d = self.gnm_np.template_vertex_positions
+    num_vertices = vertices_2d.shape[0]
+    vertices_3d = np.broadcast_to(vertices_2d, (2, num_vertices, 3))
+    explicit_normals_3d = np.ones((2, num_vertices, 3), dtype=np.float32)
+
+    vertices_m, normals_m = renderer._prepare_vertices_and_normals(
+        vertices_3d, explicit_normals_3d
+    )
+    self.assertEqual(vertices_m.shape, (2, num_vertices, 3))
+    self.assertEqual(normals_m.shape, (2, num_vertices, 3))
+    self.assertEqual(vertices_m.dtype, np.float32)
+    self.assertEqual(normals_m.dtype, np.float32)
+    np.testing.assert_allclose(vertices_m, vertices_3d)
+    np.testing.assert_allclose(normals_m, explicit_normals_3d)
+
+  def test_prepare_vertices_and_normals_2d_explicit(self):
+    """Tests _prepare_vertices_and_normals with 2D vertices and 2D normals."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    vertices_2d = self.gnm_np.template_vertex_positions
+    num_vertices = vertices_2d.shape[0]
+    explicit_normals_2d = np.ones((num_vertices, 3), dtype=np.float32)
+
+    vertices_m, normals_m = renderer._prepare_vertices_and_normals(
+        vertices_2d, explicit_normals_2d
+    )
+    self.assertEqual(vertices_m.shape, (1, num_vertices, 3))
+    self.assertEqual(normals_m.shape, (1, num_vertices, 3))
+    np.testing.assert_allclose(vertices_m[0], vertices_2d)
+    np.testing.assert_allclose(normals_m[0], explicit_normals_2d)
+
+  def test_camera_caching(self):
+    """Tests _is_camera_cached and _cache_camera state management."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    world_to_camera = np.eye(4, dtype=np.float32)
+    camera_to_image = np.eye(4, dtype=np.float32)
+    image_size = (320, 240)
+
+    self.assertIsNone(renderer._cached_world_to_camera)
+    self.assertIsNone(renderer._cached_camera_to_image)
+    self.assertIsNone(renderer._cached_image_size)
+    self.assertFalse(
+        renderer._is_camera_cached(
+            world_to_camera=world_to_camera,
+            camera_to_image=camera_to_image,
+            image_size=image_size,
+        )
+    )
+
+    renderer._cache_camera(
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+    )
+    self.assertTrue(
+        renderer._is_camera_cached(
+            world_to_camera=world_to_camera,
+            camera_to_image=camera_to_image,
+            image_size=image_size,
+        )
+    )
+
+    mutated_world_to_camera = world_to_camera.copy()
+    mutated_world_to_camera[0, 3] = 10.0
+    self.assertFalse(
+        renderer._is_camera_cached(
+            world_to_camera=mutated_world_to_camera,
+            camera_to_image=camera_to_image,
+            image_size=image_size,
+        )
+    )
+
+    mutated_camera_to_image = camera_to_image.copy()
+    mutated_camera_to_image[0, 0] = 5.0
+    self.assertFalse(
+        renderer._is_camera_cached(
+            world_to_camera=world_to_camera,
+            camera_to_image=mutated_camera_to_image,
+            image_size=image_size,
+        )
+    )
+
+    self.assertFalse(
+        renderer._is_camera_cached(
+            world_to_camera=world_to_camera,
+            camera_to_image=camera_to_image,
+            image_size=(640, 480),
+        )
+    )
+
+  def test_close_resets_cached_camera(self):
+    """Tests that close() resets cached camera matrices and image size."""
+    renderer = _DummyGNMMeshRenderer.from_gnm(self.gnm_np)
+    world_to_camera = np.eye(4, dtype=np.float32)
+    camera_to_image = np.eye(4, dtype=np.float32)
+    image_size = (320, 240)
+
+    renderer._cache_camera(
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+    )
+    self.assertTrue(
+        renderer._is_camera_cached(
+            world_to_camera=world_to_camera,
+            camera_to_image=camera_to_image,
+            image_size=image_size,
+        )
+    )
+
+    renderer.close()
+    self.assertIsNone(renderer._cached_world_to_camera)
+    self.assertIsNone(renderer._cached_camera_to_image)
+    self.assertIsNone(renderer._cached_image_size)
 
 
 if __name__ == '__main__':

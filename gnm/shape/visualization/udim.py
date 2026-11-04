@@ -20,9 +20,20 @@ texture (a tile) and the fractional part addresses it, see
 a mesh by tile.
 """
 
+from typing import TypeAlias
+
+from gnm.shape import gnm_typing
 from gnm.shape import gnm_udim
 import numpy as np
 import numpy.typing as npt
+
+enpt = gnm_typing.enpt
+
+TileGeometry: TypeAlias = tuple[
+    enpt.IntArray['C_tile'],  # pyrefly: ignore[unknown-name]
+    enpt.IntArray['F_tile 3'],  # pyrefly: ignore[unknown-name]
+    enpt.FloatArray['C_tile 2'],  # pyrefly: ignore[unknown-name]
+]
 
 
 def split_triangles_by_tile(
@@ -52,3 +63,22 @@ def split_triangles_by_tile(
     indices = np.flatnonzero(tiles == tile)
     split[tile] = (indices, triangle_uvs[indices] - tile_offsets[indices, None])
   return split
+
+
+def build_tile_geometry(
+    triangles: enpt.IntArray['F 3'],
+    triangle_uvs: enpt.FloatArray['F 3 2'],
+) -> dict[int, TileGeometry]:
+  """Splits triangles by UDIM tile and unwelds corners per tile."""
+  if len(triangles) == 0:
+    return {}
+
+  tile_geometry: dict[int, TileGeometry] = {}
+  for tile, (tile_triangles, tile_uvs) in split_triangles_by_tile(
+      triangle_uvs
+  ).items():
+    corners = np.asarray(triangles[tile_triangles].ravel(), dtype=np.int32)
+    faces = np.arange(corners.size, dtype=np.int32).reshape(-1, 3)
+    unwelded_uvs = np.asarray(tile_uvs.reshape(-1, 2), dtype=np.float32)
+    tile_geometry[int(tile)] = (corners, faces, unwelded_uvs)
+  return tile_geometry
