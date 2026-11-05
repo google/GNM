@@ -890,7 +890,7 @@ def _compute_sensor_parameters(
   cy = float(camera_to_image_cv[1, 2])
 
   f_max = max(abs(fx), abs(fy), 1e-6)
-  if abs(fx - fy) / f_max > 1e-4 or abs(skew) / f_max > 1e-4:
+  if abs(fx - fy) / f_max > 1e-2 or abs(skew) / f_max > 1e-4:
     raise NotImplementedError(
         'Mitsuba sensor only supports square pixels (fx == fy) and zero skew, '
         f'got fx={fx}, fy={fy}, skew={skew}.'
