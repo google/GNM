@@ -196,6 +196,9 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
     # clamped cosine terms.
     cos_theta_light = mi.Frame3f.cos_theta(light_direction_local)
     cos_theta_view = mi.Frame3f.cos_theta(view_direction_local)
+    cos_theta_light = dr.select(
+        cos_theta_view < 0.0, -cos_theta_light, cos_theta_light
+    )
     n_dot_l = dr.clip((cos_theta_light + 0.8) / 1.8, 0.0, 1.0)
     n_dot_v = dr.clip(dr.abs(cos_theta_view), 0.001, 1.0)
     v_dot_h = dr.clip(dr.dot(view_direction_local, half_vector_local), 0.0, 1.0)
