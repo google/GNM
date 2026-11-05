@@ -289,11 +289,15 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
   """Stateful Mitsuba 3D mesh renderer for `gnm_numpy.GNM` models.
 
   Attributes:
+    ambient_light: Ambient light floor in [0, 1]. Defaults to 0.0.
+    backface_culling: Whether to cull back-facing triangles. Defaults to True.
     spp: Raytracing samples per pixel. Defaults to 4.
   """
 
   _progress_bar_desc: ClassVar[str] = 'Rendering (Mitsuba)'
 
+  ambient_light: float = 0.0
+  backface_culling: bool = True
   spp: int = 4
 
   def __post_init__(self) -> None:
@@ -310,6 +314,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
       multisample_antialiasing: int = 1,
       vertex_colors: enpt.FloatArray['... V 3'] | None = None,
       include_shading: bool = True,
+      ambient_light: float = 0.0,
+      backface_culling: bool = True,
       verbose: bool = False,
       spp: int = 4,
   ) -> Self:
@@ -328,6 +334,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         Defaults to standard GNM per-component vertex colors.
       include_shading: Whether to include directional lighting/shading. Defaults
         to True.
+      ambient_light: Ambient light floor in [0, 1]. Defaults to 0.0.
+      backface_culling: Whether to cull back-facing triangles. Defaults to True.
       verbose: Default flag controlling whether to display a progress bar.
       spp: Raytracing samples per pixel. Defaults to 4.
 
@@ -343,6 +351,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         include_shading=include_shading,
         verbose=verbose,
     )
+    renderer.ambient_light = ambient_light
+    renderer.backface_culling = backface_culling
     renderer.spp = spp
     return renderer
 
@@ -727,6 +737,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
                 float(light_direction[2]),
             ),
             'include_shading': self.include_shading,
+            'ambient_light': self.ambient_light,
+            'backface_culling': self.backface_culling,
         },
         **meshes,
     }
@@ -762,6 +774,8 @@ def render(
     background_color: enpt.FloatArray['N H W 3'] | None = None,
     alpha: float = 1.0,
     include_shading: bool = True,
+    ambient_light: float = 0.0,
+    backface_culling: bool = True,
     verbose: bool = False,
 ) -> enpt.FloatArray['N H W 3']:
   """Renders GNM meshes using Mitsuba.
@@ -788,6 +802,8 @@ def render(
     alpha: A float [0-1] to be multiplied by the render-alpha to determine
       blending with the background color.
     include_shading: If False, disable shading in render.
+    ambient_light: Ambient light floor in [0, 1].
+    backface_culling: Whether to cull back-facing triangles.
     verbose: Whether to print progress bars.
 
   Returns:
@@ -804,6 +820,8 @@ def render(
       texture=texture,
       multisample_antialiasing=multisample_antialiasing,
       include_shading=include_shading,
+      ambient_light=ambient_light,
+      backface_culling=backface_culling,
       verbose=verbose,
   )
   # pylint: enable=unexpected-keyword-arg

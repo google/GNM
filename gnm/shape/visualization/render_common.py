@@ -106,6 +106,7 @@ class BackendRenderFn(Protocol):
 
   def __call__(
       self,
+      *,
       vertices: FloatArray,
       triangles: npt.NDArray[np.integer],
       world_to_camera: FloatArray,

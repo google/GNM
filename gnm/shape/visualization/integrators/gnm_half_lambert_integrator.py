@@ -61,7 +61,9 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
             _LIGHT_INTENSITY,
         )
     )
+    self.ambient_light = mi.Float(props.get('ambient_light', 0.0))
     self.include_shading = bool(props.get('include_shading', True))
+    self.backface_culling = bool(props.get('backface_culling', True))
 
   def traverse(self, callback: mi.TraversalCallback) -> None:
     """Exposes traversable integrator parameters.
@@ -74,6 +76,11 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
     callback.put(
         'light_intensity',
         self.light_intensity,
+        mi.ParamFlags.NonDifferentiable,
+    )
+    callback.put(
+        'ambient_light',
+        self.ambient_light,
         mi.ParamFlags.NonDifferentiable,
     )
 
@@ -101,6 +108,8 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
     del sampler, medium
     scene_intersection = scene.ray_intersect(ray, mi.Bool(active))
     is_valid = active & scene_intersection.is_valid()
+    if self.backface_culling:
+      is_valid &= dr.dot(scene_intersection.n, ray.d) < 0.0
 
     has_vertex_colors = scene_intersection.shape.has_attribute('vertex_colors')
     vertex_colors = dr.select(
@@ -215,8 +224,12 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
         )
     )
 
-    return mi.Color3f(
+    directional = (
         n_dot_l * self.light_intensity * (diffuse_contrib + spec_contrib)
+    )
+    return mi.Color3f(
+        (1.0 - self.ambient_light) * directional
+        + self.ambient_light * mi.Color3f(diffuse_reflectance)
     )
 
 
