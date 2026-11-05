@@ -77,25 +77,20 @@ class GNM(gnm_xnp.GNM):
   * P: Number of separate parts of the mesh.
 
   Attributes:
-    joint_parent_indices: Parent's index for each joint in the skeleton, (J).
+    version: The version of the loaded GNM model.
+    variant: The variant of the loaded GNM model.
     template_vertex_positions: Vertex positions in the template mesh, (V, 3).
     template_joint_positions: Joint positions in the template GNM, (J, 3).
-    identity_names: The name of each identity in the identity basis.
-    vertex_identity_basis: The vertex identity basis (I, V, 3).
+    vertex_identity_basis: The vertex identity basis of the model, (I, V, 3).
     joint_identity_basis: The joint identity basis of the model, (I, J, 3).
-    expression_names: The name of each expression in the expression basis.
     expression_basis: The vertex expression basis, aka blend-shapes, (E, V, 3).
+    identity_names: The name of each identity in the identity basis.
     joint_names: The name of each joint in the skeleton.
+    expression_names: The name of each expression in the expression basis.
+    joint_parent_indices: Parent's index for each joint in the skeleton, (J,).
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
-    version: The version of the loaded GNM model.
-    pose_correctives_regressor: Matrix for pose correctives, (9*J, 3*V).
-    joint_regressor: Mapping from vertices to joints, (J, V).
-    bone_aligned_orientations: The bone-aligned rotations for each joint, (J, 3,
-      3). If they do not exist in the GNM npz, they are set to the identity
-      matrix. Note that these are not used to compute the GNM joint and vertex
-      positions.
     quad_uvs: Texture coordinates per quad, (Q, 4, 2). All regions share the
       unit square and overlap there; prefer `quad_uvs_udim`.
     triangle_uvs: Texture coordinates per triangle, (T, 3, 2). All regions share
@@ -103,7 +98,12 @@ class GNM(gnm_xnp.GNM):
     mesh_component_names: The vertex group name corresponding to each separate
       mesh part.
     mirror_indices: The index of each vertex on the other side of the mesh.
-    variant: The variant of the loaded GNM model.
+    joint_regressor: Mapping from vertices to joints, (J, V).
+    pose_correctives_regressor: Matrix for pose correctives, (9*J, 3*V).
+    bone_aligned_template_joint_orientations: The bone-aligned rotations for
+      each joint, (J, 3, 3). If they do not exist in the GNM npz, they are set
+      to the identity matrix. Note that these are not used to compute the GNM
+      joint and vertex positions.
     vertex_groups: The weights in each vertex group, (G, V).
     vertex_group_names: The name of each vertex group, (G,).
     joint_connections: The joint connections of the GNM rig.
@@ -111,16 +111,16 @@ class GNM(gnm_xnp.GNM):
       children of each joint.
     skinning_segmentation: A decomposition of the vertices into separate parts
       based on skinning weights.
+    num_vertices: The number of vertices in the mesh V.
+    num_joints: The number of joints in the skeleton J.
+    identity_dim: The dimensionality of the linear identity basis I.
+    expression_dim: The dimensionality of the linear expression basis E.
     edge_list: The quad topology represented as a list of directed edges (E, 2).
     vertex_uvs: Per-vertex UV texture coordinates shaped (V, 2).
     quad_udim_tiles: The UDIM tile number of each quad, (Q,).
     triangle_udim_tiles: The UDIM tile number of each triangle, (T,).
     quad_uvs_udim: Per-quad UDIM texture coordinates, (Q, 4, 2).
     triangle_uvs_udim: Per-triangle UDIM texture coordinates, (T, 3, 2).
-    num_vertices: The number of vertices in the mesh V.
-    num_joints: The number of joints in the skeleton J.
-    identity_dim: The dimensionality of the linear identity basis I.
-    expression_dim: The dimensionality of the linear expression basis E.
   """
 
   @classmethod

@@ -76,7 +76,7 @@ class GNM(gnm_base.GNMBase):
     identity_names: The name of each identity in the identity basis.
     joint_names: The name of each joint in the skeleton.
     expression_names: The name of each expression in the expression basis.
-    joint_parent_indices: Parent's index for each joint in the skeleton, (J).
+    joint_parent_indices: Parent's index for each joint in the skeleton, (J,).
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
@@ -322,7 +322,24 @@ class GNM(gnm_base.GNMBase):
       rotations: enpt.FloatArray['A1 ... An J 3'] | None = None,
       translation: enpt.FloatArray['A1 ... An 3'] | None = None,
   ) -> enpt.FloatArray['A1 ... An V 3']:
-    """Evaluates the GNM mesh-generating function."""
+    """Evaluates the GNM mesh-generating function.
+
+    Input parameters have optional batch dimensions [A1, ..., An]. Parameters
+    may be omitted - in this case default values will be substituted.
+
+    Args:
+      identity: Identity coefficients, ([A1, ..., An], I). If None, zeros will
+        be used.
+      expression: Expression coefficients, ([A1, ..., An], E). If None, zeros
+        will be used.
+      rotations: Joint rotations in axis-angle format, ([A1, ..., An], J, 3). If
+        None, zeros will be used.
+      translation: Root-joint translation, ([A1, ..., An], 3). If None, zeros
+        will be used.
+
+    Returns:
+      Mesh vertices, ([A1, ..., An], V, 3).
+    """
     self._check_parameter_shapes(identity, expression, rotations, translation)
     batch_shape = _check_batch_dims(
         identity, expression, rotations, translation
@@ -382,7 +399,23 @@ class GNM(gnm_base.GNMBase):
       enpt.FloatArray['A1 ... An V 3'],
       enpt.FloatArray['A1 ... An L 3'],
   ]:
-    """Evaluates the GNM mesh function and extracts 3D landmarks."""
+    """Evaluates the GNM mesh-generating function and extracts 3D landmarks.
+
+    Args:
+      landmarks_type: The type of landmarks to extract.
+      identity: Identity coefficients, ([A1, ..., An], I). If None, zeros will
+        be used.
+      expression: Expression coefficients, ([A1, ..., An], E). If None, zeros
+        will be used.
+      rotations: Joint rotations in axis-angle format, ([A1, ..., An], J, 3). If
+        None, zeros will be used.
+      translation: Root-joint translation, ([A1, ..., An], 3). If None, zeros
+        will be used.
+
+    Returns:
+      A tuple of (vertices, landmarks) where vertices has shape
+      ([A1, ..., An], V, 3) and landmarks has shape ([A1, ..., An], L, 3).
+    """
     gnm_landmarks.check_body_part_compatibility(landmarks_type, self.body_part)
     if landmarks_type not in self._landmarks:
       config = gnm_landmarks.load_landmarks(landmarks_type)
@@ -411,7 +444,19 @@ class GNM(gnm_base.GNMBase):
       rotations: enpt.FloatArray['A1 ... An J 3'],
       translation: enpt.FloatArray['A1 ... An 3'],
   ) -> enpt.FloatArray['A1 ... An V 3']:
-    """Applies linear blend skinning to GNM vertices."""
+    """Applies linear blend skinning to the input GNM vertices.
+
+    Args:
+      vertices: The vertices in the bind pose, ([A1, ..., An], V, 3).
+      joints: The joints in the bind pose, ([A1, ..., An], J, 3).
+      rotations: GNM joint rotations in axis-angle format, ([A1, ..., An], J,
+        3).
+      translation: GNM root translation, ([A1, ..., An], 3).
+
+    Returns:
+      The posed vertices after applying linear blend skinning about the input
+      joints, ([A1, ..., An], V, 3).
+    """
     return gnm_common.linear_blend_skinning(
         local_vertices=vertices,
         joint_positions=joints,
@@ -425,18 +470,22 @@ class GNM(gnm_base.GNMBase):
 
   @property
   def num_vertices(self) -> int:
+    """The number of vertices in the mesh V."""
     return self.template_vertex_positions.shape[0]
 
   @property
   def num_joints(self) -> int:
+    """The number of joints in the skeleton J."""
     return self.skinning_weights.shape[0]
 
   @property
   def identity_dim(self) -> int:
+    """The dimensionality of the linear identity basis I."""
     return self.vertex_identity_basis.shape[0]
 
   @property
   def expression_dim(self) -> int:
+    """The dimensionality of the linear expression basis E."""
     return self.expression_basis.shape[0]
 
   @functools.cached_property
@@ -466,6 +515,7 @@ class GNM(gnm_base.GNMBase):
 
   @functools.cached_property
   def joint_children_indices(self) -> Mapping[int, Sequence[int]]:
+    """A dictionary mapping each joint index to its children's joint indices."""
     children = collections.defaultdict(list)
     for joint, parent in enumerate(self.joint_parent_indices):
       if joint == 0:
@@ -475,7 +525,16 @@ class GNM(gnm_base.GNMBase):
 
   @functools.cached_property
   def vertex_uvs(self) -> npt.NDArray[np.floating]:
-    """Per-vertex UV texture coordinates."""
+    """Per-vertex UV texture coordinates shaped (V, 2).
+
+    Warning: these do not allow correct texturing across UV-seams. Please use
+    per-face UV coordinates when possible. This property is exposed to support
+    certain renderers or packages that do not support per-face UVs.
+
+    With per-face UVs, each vertex may have multiple UV coordinates which must
+    be reduced to a single one. We assign each vertex the last UV coordinate
+    associated with it in the order given by the quad topology.
+    """
     logging.warning(
         'These do not allow correct texturing across UV-seams. Please use '
         'per-quad or per-triangle UV coordinates when possible.'
@@ -517,6 +576,7 @@ class GNM(gnm_base.GNMBase):
 
   @property
   def skinning_segmentation(self) -> npt.NDArray[np.int32]:
+    """A part segmentation of the vertices based on skinning weights."""
     return np.array(self.skinning_weights).argmax(  # pyrefly: ignore[bad-return]  # pylint: disable=line-too-long
         axis=0
     )
@@ -527,6 +587,17 @@ class GNM(gnm_base.GNMBase):
       identity: enpt.FloatArray['A1 ... An I'],
       expression: enpt.FloatArray['A1 ... An E'],
   ) -> enpt.FloatArray['A1 ... An V 3']:
+    """Vertex positions in the bind pose, ([A1, ..., An], V, 3).
+
+    Mesh vertices in the bind pose with identity and expression bases applied.
+
+    Args:
+      identity: Identity coefficients, ([A1, ..., An], I).
+      expression: Expression coefficients, ([A1, ..., An], E).
+
+    Returns:
+      Vertex positions in the bind pose, ([A1, ..., An], V, 3).
+    """
     return gnm_common.vertex_positions_bind_pose(
         identity,
         expression,
@@ -540,6 +611,16 @@ class GNM(gnm_base.GNMBase):
       self,
       identity: enpt.FloatArray['A1 ... An I'],
   ) -> enpt.FloatArray['A1 ... An J 3']:
+    """Joint positions in the bind pose, ([A1, ..., An], J, 3).
+
+    Joint positions in the bind pose with identity basis applied.
+
+    Args:
+      identity: Identity coefficients, ([A1, ..., An], I).
+
+    Returns:
+      Joint positions in the bind pose, ([A1, ..., An], J, 3).
+    """
     return gnm_common.joint_positions_bind_pose(
         identity,
         self.template_joint_positions,
@@ -551,6 +632,17 @@ class GNM(gnm_base.GNMBase):
       self,
       rotations: enpt.FloatArray['A1 ... An J 3'],
   ) -> enpt.FloatArray['A1 ... An V 3']:
+    """Computes per-vertex pose corrective offsets, ([A1, ..., An], V, 3).
+
+    If `self.pose_correctives_regressor` is `None`, then this GNM instance
+    has no correctives and this function returns a zero array of the same shape.
+
+    Args:
+      rotations: Joint rotations in axis-angle format, ([A1, ..., An], J, 3).
+
+    Returns:
+      Pose correctives as vertex offsets, ([A1, ..., An], V, 3).
+    """
     return gnm_common.compute_pose_correctives(
         rotations,
         self.pose_correctives_regressor,
@@ -566,6 +658,16 @@ class GNM(gnm_base.GNMBase):
       rotations: enpt.FloatArray['A1 ... An J 3'],
       translation: enpt.FloatArray['A1 ... An 3'],
   ) -> enpt.FloatArray['A1 ... An J 4 4']:
+    """Gets the world-space transforms of each joint, ([A1, ..., An], J, 4, 4).
+
+    Args:
+      joints: Joint locations in the bind pose, ([A1, ..., An], J, 3).
+      rotations: Per-joint rotations as axis-angle, ([A1, ..., An], J, 3).
+      translation: The translation of the root joint, ([A1, ..., An], 3).
+
+    Returns:
+      Local-to-world transforms of each joint, ([A1, ..., An], J, 4, 4).
+    """
     return gnm_common.joint_transforms_world(
         joints, rotations, translation, self.joint_parent_indices
     )
@@ -577,6 +679,16 @@ class GNM(gnm_base.GNMBase):
       rotations: enpt.FloatArray['A1 ... An J 3'],
       translation: enpt.FloatArray['A1 ... An 3'],
   ) -> enpt.FloatArray['A1 ... An J 4 4']:
+    """Gets the world-space transforms of each joint, ([A1, ..., An], J, 4, 4).
+
+    Args:
+      identity: Identity coefficients, ([A1, ..., An], I).
+      rotations: Joint rotations, ([A1, ..., An], J, 3).
+      translation: Root-joint translation, ([A1, ..., An], 3).
+
+    Returns:
+      Local-to-world joint transformations, ([A1, ..., An], J, 4, 4).
+    """
     self._check_parameter_shapes(
         identity=identity, rotations=rotations, translation=translation
     )
@@ -590,6 +702,17 @@ class GNM(gnm_base.GNMBase):
     )
 
   def vertex_group(self, name: str) -> npt.NDArray[np.floating]:
+    """Returns the scalar value of each vertex in the vertex group, (V,).
+
+    Args:
+      name: Vertex group name.
+
+    Raises:
+      KeyError: If the vertex group name is not found.
+
+    Returns:
+      1D array of float32 values, one for each vertex.
+    """
     try:
       return np.array(self.vertex_groups[self._vertex_group_names_lookup[name]])
     except KeyError as exc:
@@ -600,6 +723,24 @@ class GNM(gnm_base.GNMBase):
   def vertex_group_mask(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
   ) -> npt.NDArray[np.bool_]:
+    """Returns the mask of vertices with non-zero value in the group(s).
+
+    Multiple groups may be provided.
+    Example 1: Seeking vertices that intersect two groups:
+      `gnm.vertex_group_mask('group_a', '&group_b')`.
+    Example 2: Negation of a group:
+      `gnm.vertex_group_mask('~group_a')`.
+
+    Warning: operations are applied consecutively regardless of precedence.
+
+    Args:
+      *names: Vertex group name(s) optionally prepended with an operator and
+        negation `[op][~]group_name`. Operators: '|' (default), '&', '-'.
+      threshold: Threshold for non-zero values.
+
+    Returns:
+      1D array representing vertex mask (np.bool_).
+    """
     result_mask = np.zeros(self.num_vertices, dtype=bool)
     for name in names:
       operator, inverse = '|', False
@@ -622,33 +763,52 @@ class GNM(gnm_base.GNMBase):
   def vertex_group_indices(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
   ) -> npt.NDArray[np.integer]:
+    """Returns the indices of vertices with non-zero value in the group(s).
+
+    Multiple groups may be provided. See `vertex_group_mask` for examples.
+
+    Args:
+      *names: Vertex group name(s) optionally prepended with an operator and
+        negation `[op][~]group_name`. Operators: '|' (default), '&', '-'.
+      threshold: Threshold for non-zero values.
+
+    Returns:
+      1D array of vertex indices (np.int64).
+    """
     return np.where(self.vertex_group_mask(*names, threshold=threshold))[0]
 
   def quad_indices_for_group(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
   ) -> npt.NDArray[np.integer]:
+    """Quad indices for which all vertices belong to a group, (Q',)."""
     mask = self.vertex_group_mask(*names, threshold=threshold)
     return np.where(np.all(mask[self.quads], axis=-1))[0]
 
   def triangle_indices_for_group(
       self, *names: str, threshold: float = _NONZERO_THRESHOLD
   ) -> npt.NDArray[np.integer]:
+    """Triangle indices for which all vertices belong to a group, (T',)."""
     mask = self.vertex_group_mask(*names, threshold=threshold)
     return np.where(np.all(mask[self.triangles], axis=-1))[0]
 
   def quads_group(self, *names: str) -> npt.NDArray[np.integer]:
+    """Quads for which all vertices belong to a vertex group, (Q', 4)."""
     return np.array(self.quads)[self.quad_indices_for_group(*names)]
 
   def triangles_group(self, *names: str) -> npt.NDArray[np.integer]:
+    """Triangles for which all vertices belong to a vertex group, (T', 3)."""
     return np.array(self.triangles)[self.triangle_indices_for_group(*names)]
 
   def quad_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+    """Per-quad UV texture coordinates for a vertex group, (Q', 4, 2)."""
     return np.array(self.quad_uvs)[self.quad_indices_for_group(*names)]
 
   def triangle_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+    """Per-triangle UV texture coordinates for a vertex group, (T', 3, 2)."""
     return np.array(self.triangle_uvs)[self.triangle_indices_for_group(*names)]
 
   def vertex_uvs_group(self, *names: str) -> npt.NDArray[np.floating]:
+    """Per-vertex UV texture coordinates for a vertex group, (V', 2)."""
     return self.vertex_uvs[self.vertex_group_indices(*names)]
 
   @property

@@ -91,7 +91,7 @@ class GNM(gnm_xnp.GNM):
     identity_names: The name of each identity in the identity basis.
     joint_names: The name of each joint in the skeleton.
     expression_names: The name of each expression in the expression basis.
-    joint_parent_indices: Parent's index for each joint in the skeleton, (J).
+    joint_parent_indices: Parent's index for each joint in the skeleton, (J,).
     skinning_weights: The model's skinning weights, (J, V).
     quads: The mesh topology as quads, (Q, 4).
     triangles: The mesh topology as triangles, (T, 3).
