@@ -14,6 +14,8 @@
 
 """Tests for GNM Mitsuba visualization."""
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import drjit as dr
@@ -320,6 +322,35 @@ class GNMMitsubaTest(parameterized.TestCase):
           vertex_colors=np.ones_like(vertices),
           image_size=(240, 320),
       )
+
+  def test_render_reuses_sensor_of_image_size(self):
+    """Tests that a reused sensor renders like a newly created one."""
+    self.enter_context(
+        mock.patch.dict(gnm_mitsuba._SENSORS, clear=True)  # pylint: disable=protected-access
+    )
+    gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
+    vertices = gnm_np.template_vertex_positions[np.newaxis, np.newaxis]
+    moved_world_to_camera = self.world_to_camera.copy()
+    moved_world_to_camera[0, 3] = 0.05
+
+    def render(world_to_camera: npt.NDArray[np.float32]) -> np.ndarray:
+      return gnm_mitsuba.render(
+          vertices=vertices,
+          triangles=gnm_np.triangles,
+          world_to_camera=world_to_camera[np.newaxis],
+          camera_to_image=self.camera_to_image[np.newaxis],
+          vertex_normals=gnm_np.compute_vertex_normals(vertices),
+          triangle_uvs=gnm_np.triangle_uvs_udim,
+          vertex_colors=np.ones_like(vertices),
+          image_size=(60, 80),
+      )
+
+    render(self.world_to_camera)
+    reused = render(moved_world_to_camera)
+    self.assertLen(gnm_mitsuba._SENSORS, 1)  # pylint: disable=protected-access
+    gnm_mitsuba._SENSORS.clear()  # pylint: disable=protected-access
+    created = render(moved_world_to_camera)
+    np.testing.assert_allclose(reused, created, rtol=1e-5, atol=1e-5)
 
   def test_render_suspends_gradients(self):
     """Tests that mesh creation and rendering suspend gradient tracking."""
