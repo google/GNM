@@ -5,12 +5,14 @@ on:
     branches: [main, master]
     paths:
       - 'gnm/shape/**'
+      - 'pyproject.toml'
       - 'copy.bara.sky'
       - '.github/workflows/**'
   pull_request:
     branches: [main, master]
     paths:
       - 'gnm/shape/**'
+      - 'pyproject.toml'
       - 'copy.bara.sky'
       - '.github/workflows/**'
   schedule:
