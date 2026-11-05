@@ -16,6 +16,8 @@
 
 # pylint: disable=protected-access
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import cv2
@@ -37,12 +39,54 @@ class RenderGNMTest(render_gnm_test_base.RenderGNMTestBase):
   render_fn = staticmethod(render_gnm.render_gnm)
   test_all_versions = True
 
+  def test_mesh_renderer_exposed_and_renders(self):
+    self.assertIs(
+        render_gnm.GNMMeshRenderer, render_gnm.gnm_pyrender.GNMMeshRenderer
+    )
+    self.assertIs(render_gnm.MeshRenderOutput, render_common.MeshRenderOutput)
+    renderer = render_gnm.GNMMeshRenderer.from_gnm(self.gnm_np)
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np, image_size=(64, 64)
+        )
+    )
+    output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=(64, 64),
+    )
+    self.assertIsInstance(output, render_gnm.MeshRenderOutput)
+    self.assertEqual(output.image.shape, (64, 64, 3))
+    self.assertEqual(output.alpha.shape, (64, 64, 1))
+    renderer.close()
+
 
 class RenderGNMBatchTest(render_gnm_test_base.RenderGNMBatchTestBase):
   """Tests batching of arguments to render_gnm."""
 
   render_fn = staticmethod(render_gnm.render_gnm)
-  mock_target = 'gnm.shape.visualization.gnm_pyrender.render'
+  mock_target = (
+      'gnm.shape.visualization.gnm_pyrender.GNMMeshRenderer.'
+      '_render_single_frame'
+  )
+
+  def setUp(self):
+    super().setUp()
+    self.enter_context(
+        mock.patch.object(
+            render_gnm.GNMMeshRenderer, 'update_camera', autospec=True
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            render_gnm.GNMMeshRenderer, 'update_vertices', autospec=True
+        )
+    )
+    self.mock_render.side_effect = lambda _self, width, height: (
+        np.zeros((height, width, 3), dtype=np.float32),
+        np.zeros((height, width, 1), dtype=np.float32),
+    )
 
 
 class TestProjectPointsForGNM(parameterized.TestCase):

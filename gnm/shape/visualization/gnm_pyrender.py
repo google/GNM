@@ -15,24 +15,31 @@
 """Render a GNM mesh with pyrender.
 
 This is the rendering backend of `render_gnm`, which prepares and batches its
-arguments; call `render_gnm.render_gnm` rather than `render` directly.
+arguments; call `render_gnm.render_gnm` or `GNMMeshRenderer` rather than
+`render` directly.
 """
 
 from collections.abc import Callable, Mapping
+import dataclasses
 import functools
 import os
 import tempfile
-from typing import Any
+import types
+from typing import Any, ClassVar, Self
 
 import cv2
-from gnm.shape.visualization import udim
+from gnm.shape import gnm_numpy
+from gnm.shape import gnm_typing
+from gnm.shape.visualization import camera_conversions
+from gnm.shape.visualization import render_common
 import numpy as np
 import numpy.typing as npt
-import tqdm
 
 if 'PYOPENGL_PLATFORM' not in os.environ:
   os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 import pyrender  # pylint: disable=wrong-import-position,ungrouped-imports
+
+enpt = gnm_typing.enpt
 
 # Light direction for shading, in camera-space.
 
@@ -67,24 +74,382 @@ class ProjectionMatrixCamera(pyrender.Camera):
     self._projection_matrix = projection_matrix
 
 
-def _changed_flag(array: npt.NDArray[np.generic]) -> npt.NDArray[np.bool_]:
-  """Returns a flag indicating whether the array has changed between frames.
+@dataclasses.dataclass(kw_only=True)
+class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Stateful PyRender 3D mesh renderer for `gnm_numpy.GNM` models.
 
-  Args:
-    array: The data of N frames to check for change, (N, ...).
+  Supports both OSMesa (`DEFAULT_RENDERER_FACTORY`) and SwiftShader
+  (`gnm_pyrender_swiftshader.create_swiftshader_renderer`) backends.
 
-  Returns:
-    A flag indicating whether the array has changed between frames, (N,). Always
-    1 for the first frame.
+  Attributes:
+    renderer_factory: Factory callable `(viewport_width, viewport_height) ->
+      pyrender.OffscreenRenderer`.
   """
-  if array.strides[0] == 0:
-    # 'N' dimension is just a broadcast.
-    arr = np.zeros(array.shape[0], dtype=np.bool_)
-    arr[0] = True
-    return arr
 
-  frame_flags = np.any(np.diff(array, axis=0), axis=tuple(range(1, array.ndim)))
-  return np.concatenate([np.ones(1, dtype=np.bool_), frame_flags])
+  _progress_bar_desc: ClassVar[str] = 'Rendering (PyRender)'
+
+  renderer_factory: Callable[[int, int], pyrender.OffscreenRenderer] = (
+      DEFAULT_RENDERER_FACTORY
+  )
+  _cameras_in_opengl: bool = dataclasses.field(
+      default=False, repr=False, compare=False
+  )
+
+  @classmethod
+  def from_gnm(
+      cls,
+      gnm_np: gnm_numpy.GNM,
+      *,
+      triangles: render_common.TriangleGroups = '~eye_exteriors',
+      texture: render_common.Texture = render_common.DEFAULT_TEXTURE,
+      multisample_antialiasing: int = 1,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      include_shading: bool = True,
+      verbose: bool = False,
+      renderer_factory: Callable[
+          [int, int], pyrender.OffscreenRenderer
+      ] = DEFAULT_RENDERER_FACTORY,
+  ) -> Self:
+    """Instantiates a PyRender mesh renderer from a NumPy GNM shape model.
+
+    Args:
+      gnm_np: NumPy GNM shape model.
+      triangles: Vertex group expression string, sequence of group strings, or
+        1D face index array.
+      texture: Optional per-UDIM-tile texture mapping, single array for
+        `SKIN_UDIM_TILE`, `DEFAULT_TEXTURE` for the default edgeflow texture, or
+        None for plain white textures.
+      multisample_antialiasing: Supersampling factor for anti-aliasing. Defaults
+        to 1 (native resolution).
+      vertex_colors: Optional per-vertex RGB colors of shape (..., V, 3).
+        Defaults to standard GNM per-component vertex colors.
+      include_shading: Whether to include directional lighting/shading. Defaults
+        to True.
+      verbose: Default flag controlling whether to display a progress bar.
+      renderer_factory: Factory callable `(viewport_width, viewport_height) ->
+        pyrender.OffscreenRenderer`.
+
+    Returns:
+      A new `GNMMeshRenderer` instance configured for `gnm_np`.
+    """
+    renderer = super().from_gnm(
+        gnm_np,
+        triangles=triangles,
+        texture=texture,
+        multisample_antialiasing=multisample_antialiasing,
+        vertex_colors=vertex_colors,
+        include_shading=include_shading,
+        verbose=verbose,
+    )
+    renderer.renderer_factory = renderer_factory
+    return renderer
+
+  _scene: pyrender.Scene | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _mesh_nodes: tuple[pyrender.Node, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _camera: ProjectionMatrixCamera | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _camera_node: pyrender.Node | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _renderer: pyrender.OffscreenRenderer | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _textures: dict[int, pyrender.Texture] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _cached_vertices: enpt.FloatArray['... V 3'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _cached_normals: enpt.FloatArray['... V 3'] | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+
+  def update_vertices(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      *,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates scene mesh vertices and normals in-place."""
+    del max_texture_dim
+    vertices, vertex_normals = self._prepare_vertices_and_normals(
+        vertices, vertex_normals
+    )
+    if (
+        self._scene is not None
+        and self._mesh_nodes
+        and self._cached_vertices is not None
+        and self._cached_normals is not None
+        and np.array_equal(self._cached_vertices, vertices)
+        and np.array_equal(self._cached_normals, vertex_normals)
+    ):
+      return
+
+    self._cached_vertices = vertices
+    self._cached_normals = vertex_normals
+
+    self._ensure_scene_initialized()
+    self._rebuild_mesh_nodes(vertices, vertex_normals)
+
+  def update_camera(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates the PyRender camera pose, projection matrix, and renderer."""
+    world_to_camera = np.asarray(world_to_camera, dtype=np.float32)
+    camera_to_image = np.asarray(camera_to_image, dtype=np.float32)
+
+    if (
+        self._renderer is not None
+        and self._camera is not None
+        and self._camera_node is not None
+        and self._is_camera_cached(world_to_camera, camera_to_image, image_size)
+    ):
+      return
+
+    self._ensure_scene_initialized()
+    width, height = image_size
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+
+    if self._cameras_in_opengl:
+      opengl_world_to_camera = world_to_camera
+      opengl_camera_to_image = camera_to_image
+    else:
+      opengl_world_to_camera = camera_conversions.opencv_extrinsics_to_opengl(
+          world_to_camera
+      )
+      opengl_camera_to_image = (
+          camera_conversions.opencv_intrinsics_matrix_to_opengl_view_matrix(
+              camera_to_image,
+              width=width,
+              height=height,
+              near=render_common.DEFAULT_NEAR,
+              far=render_common.DEFAULT_FAR,
+          )
+      )
+    camera_to_world = np.linalg.inv(opengl_world_to_camera)
+
+    if (
+        self._camera is not None
+        and self._camera_node is not None
+        and self._scene is not None
+    ):
+      self._camera.set_projection_matrix(opengl_camera_to_image)
+      self._scene.set_pose(self._camera_node, camera_to_world)
+
+    if self._renderer is None or self._cached_image_size != image_size:
+      if self._renderer is not None:
+        self._renderer.delete()
+      renderer = self.renderer_factory(render_width, render_height)
+      if self.include_shading:
+        _override_shader_cache(renderer)
+      self._renderer = renderer
+
+    self._cache_camera(world_to_camera, camera_to_image, image_size)
+
+  def close(self) -> None:
+    """Releases persistent OpenGL context, scene, and cached state."""
+    super().close()
+    if self._renderer is not None:
+      self._renderer.delete()
+      self._renderer = None
+    self._scene = None
+    self._mesh_nodes = ()
+    self._camera = None
+    self._camera_node = None
+    self._cached_vertices = None
+    self._cached_normals = None
+    self._textures.clear()
+
+  def __enter__(self) -> Self:
+    """Enters the runtime context related to this renderer."""
+    return self
+
+  def __exit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: types.TracebackType | None,
+  ) -> None:
+    """Exits the runtime context and releases persistent OpenGL state."""
+    del exc_type, exc_val, exc_tb
+    self.close()
+
+  def _update_frame_appearance(
+      self,
+      *,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      frame_textures: (
+          Mapping[int, enpt.ui8['H_texture W_texture 3']] | None
+      ) = None,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates active per-frame vertex colors and PyRender textures."""
+    super()._update_frame_appearance(
+        vertex_colors=vertex_colors,
+        frame_textures=frame_textures,
+        max_texture_dim=max_texture_dim,
+    )
+    if frame_textures is not None:
+      for tile, texture_frame in frame_textures.items():
+        self._textures[tile] = pyrender.Texture(
+            source=texture_frame, source_channels='RGB'
+        )
+    if vertex_colors is not None or frame_textures is not None:
+      self._cached_vertices = None
+      self._cached_normals = None
+
+  def _on_triangles_updated(self) -> None:
+    """Rebuilds the PyRender mesh nodes after `self.triangles` changes."""
+    if (
+        self._scene is not None
+        and self._cached_vertices is not None
+        and self._cached_normals is not None
+    ):
+      self._rebuild_mesh_nodes(self._cached_vertices, self._cached_normals)
+
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[enpt.FloatArray['H W 3'], enpt.FloatArray['H W 1']]:
+    """Renders the current PyRender scene for one frame.
+
+    Args:
+      width: Target output width in pixels.
+      height: Target output height in pixels.
+
+    Returns:
+      A tuple of `(frame_rgb, frame_alpha)` as float32 arrays of shapes
+      `(height, width, 3)` and `(height, width, 1)`.
+
+    Raises:
+      RuntimeError: If the PyRender scene, mesh nodes, or offscreen renderer is
+        not initialized.
+    """
+    if self._scene is None or self._renderer is None or not self._mesh_nodes:
+      raise RuntimeError(
+          'PyRender scene, mesh nodes, and offscreen renderer must be'
+          ' initialized before rendering.'
+      )
+    flags = (
+        pyrender.constants.RenderFlags.NONE
+        if self.include_shading
+        else pyrender.constants.RenderFlags.FLAT
+    )
+    color_srgb, depth = self._renderer.render(self._scene, flags=flags)
+    foreground_rgb = np.clip(color_srgb.astype(np.float32) / 255.0, 0.0, 1.0)
+    foreground_rgb = np.power(foreground_rgb, 2.2)
+    subpixel_alpha = (depth > 0.0).astype(np.float32)[..., np.newaxis]
+    premultiplied_rgb = foreground_rgb * subpixel_alpha
+
+    if self.multisample_antialiasing > 1:
+      premultiplied_rgb = cv2.resize(
+          premultiplied_rgb, (width, height), interpolation=cv2.INTER_AREA
+      )
+      msaa_alpha = cv2.resize(
+          subpixel_alpha, (width, height), interpolation=cv2.INTER_AREA
+      )
+      if msaa_alpha.ndim == 2:
+        msaa_alpha = msaa_alpha[..., np.newaxis]
+    else:
+      msaa_alpha = subpixel_alpha
+
+    safe_alpha = np.maximum(msaa_alpha, 1e-6)
+    clipped_rgb = np.clip(premultiplied_rgb / safe_alpha, 0.0, 1.0)
+    unpremultiplied_rgb = np.where(
+        msaa_alpha > 0.0,
+        clipped_rgb,
+        np.zeros_like(clipped_rgb),
+    )
+    return (
+        np.asarray(unpremultiplied_rgb, dtype=np.float32),
+        np.asarray(msaa_alpha, dtype=np.float32),
+    )
+
+  def _ensure_scene_initialized(self) -> None:
+    """Initializes PyRender scene, camera node, and light if needed."""
+    if self._scene is not None:
+      return
+    scene = pyrender.Scene(bg_color=_BLACK)
+    camera = ProjectionMatrixCamera(np.eye(4, dtype=np.float32))
+    camera_node = scene.add(camera, pose=np.eye(4, dtype=np.float32))
+    light_direction_camera = _LIGHT_DIRECTION / np.linalg.norm(_LIGHT_DIRECTION)
+    light_pose_camera = _align_vectors(
+        np.array([0.0, 0.0, 1.0]), light_direction_camera
+    )
+    light = pyrender.DirectionalLight(
+        color=np.ones(3), intensity=_LIGHT_INTENSITY
+    )
+    scene.add(light, pose=light_pose_camera, parent_node=camera_node)
+    self._scene = scene
+    self._camera = camera
+    self._camera_node = camera_node
+
+  def _get_tile_texture(self, tile: int) -> pyrender.Texture:
+    """Returns a cached `pyrender.Texture` for `tile`."""
+    cached_texture = self._textures.get(tile)
+    if cached_texture is not None:
+      return cached_texture
+    texture_frame = self._active_textures[tile]
+    pyrender_texture = pyrender.Texture(
+        source=texture_frame, source_channels='RGB'
+    )
+    self._textures[tile] = pyrender_texture
+    return pyrender_texture
+
+  def _rebuild_mesh_nodes(
+      self,
+      vertices: enpt.FloatArray['M V 3'],
+      vertex_normals: enpt.FloatArray['M V 3'],
+  ) -> None:
+    """Rebuilds the PyRender mesh nodes from vertices and tile geometry."""
+    if self._scene is None:
+      return
+    for existing_node in self._mesh_nodes:
+      self._scene.remove_node(existing_node)
+
+    num_meshes = int(vertices.shape[0])
+    active_colors = self._active_vertex_colors
+    if active_colors.ndim == 2:
+      colors_per_mesh = np.broadcast_to(
+          active_colors[np.newaxis, ...], (num_meshes, *active_colors.shape)
+      )
+    else:
+      colors_per_mesh = active_colors
+
+    new_nodes: list[pyrender.Node] = []
+    for mesh_index in range(num_meshes):
+      primitives: list[pyrender.Primitive] = []
+      for tile, (corners, _, tile_uvs) in self._tile_geometry.items():
+        if corners.size == 0:
+          continue
+        material = pyrender.MetallicRoughnessMaterial(
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+            baseColorTexture=self._get_tile_texture(tile),
+        )
+        primitives.append(
+            pyrender.Primitive(
+                positions=vertices[mesh_index][corners],
+                normals=vertex_normals[mesh_index][corners],
+                texcoord_0=tile_uvs,
+                color_0=colors_per_mesh[mesh_index][corners],
+                material=material,
+            )
+        )
+      mesh = pyrender.Mesh(primitives=primitives)
+      new_nodes.append(self._scene.add(mesh))
+    self._mesh_nodes = tuple(new_nodes)
 
 
 def render(
@@ -110,7 +475,7 @@ def render(
 ) -> npt.NDArray[np.float32]:
   """Renders GNM meshes.
 
-  N frames, M meshes. See `render_common.BackendRenderFn`.
+  N frames, M meshes.
 
   Args:
     vertices: The GNM vertices in world space, (N, M, V, 3).
@@ -137,155 +502,34 @@ def render(
   Returns:
     The rendered color image, float32 [0-1] (N, H, W, 3).
   """
-  num_frames, num_meshes = vertices.shape[:2]
-
-  # Use multi-sample anti-aliasing (MSAA) to reduce jagged edges.
-  width, height = image_size
-  render_width = width * multisample_antialiasing
-  render_height = height * multisample_antialiasing
-
-  tile_split = udim.split_triangles_by_tile(triangle_uvs)
-  tiles = list(tile_split)
-  # Unweld each tile's triangles once so that each corner has its own UVs.
-  # Without indices, consecutive position triplets form the triangles.
-  tile_corners = {
-      tile: (triangles[tri].ravel(), uvs.reshape(-1, 2))
-      for tile, (tri, uvs) in tile_split.items()
-  }
-  # Tiles without a texture are rendered plain white.
-  default_texture = np.ones((num_frames, 1, 1, 3), dtype=np.float32)
-  texture = texture or {}
-  texture = {tile: texture.get(tile, default_texture) for tile in tiles}
-
-  scene = pyrender.Scene(bg_color=_BLACK)
-
-  def _create_texture(frame: int, tile: int) -> pyrender.Texture:
-    texture_frame = texture[tile][frame]
-    if np.issubdtype(texture_frame.dtype, np.floating):
-      texture_frame = np.clip(texture_frame, 0.0, 1.0)
-    return pyrender.Texture(source=texture_frame, source_channels='RGB')
-
-  def _create_mesh(frame: int, gnm_index: int) -> pyrender.Mesh:
-    """Set-up GNM mesh and texture, with one primitive per UDIM tile."""
-    primitives = []
-    for tile in tiles:
-      material = pyrender.MetallicRoughnessMaterial(
-          metallicFactor=0.0,
-          roughnessFactor=1.0,
-      )
-      corners, tile_uvs = tile_corners[tile]
-      primitives.append(
-          pyrender.Primitive(
-              positions=vertices[frame, gnm_index][corners],
-              normals=vertex_normals[frame, gnm_index][corners],
-              texcoord_0=tile_uvs,
-              color_0=vertex_colors[frame, gnm_index][corners],
-              material=material,
-          )
-      )
-    return pyrender.Mesh(primitives=primitives)
-
-  def _apply_texture(
-      mesh_node: pyrender.Node,
-      texture: pyrender.Texture | None,
-      tile_index: int,
-  ) -> None:
-    material = mesh_node.mesh.primitives[tile_index].material
-    material.baseColorTexture = texture
-
-  # Create a mesh per GNM.
-  mesh_nodes = [None] * num_meshes
-
-  # Set-up camera.
-  camera = ProjectionMatrixCamera(camera_to_image[0].copy())
-  camera_to_world = np.linalg.inv(world_to_camera[0])
-  camera_node = scene.add(camera, pose=camera_to_world)
-
-  # Set-up light.
-  light_direction_camera = _LIGHT_DIRECTION / np.linalg.norm(_LIGHT_DIRECTION)
-  light_pose_camera = _align_vectors(
-      np.array([0.0, 0.0, 1.0]), light_direction_camera
-  )
-  light = pyrender.DirectionalLight(
-      color=np.ones(3), intensity=_LIGHT_INTENSITY
-  )
-  scene.add(light, pose=light_pose_camera, parent_node=camera_node)
-
-  renderer = renderer_factory(render_width, render_height)
-  flags = pyrender.constants.RenderFlags.NONE
-
-  if include_shading:
-    _override_shader_cache(renderer)
-  else:
-    flags |= pyrender.constants.RenderFlags.FLAT
-
-  vertices_changed = _changed_flag(vertices)
-  vertex_colors_changed = _changed_flag(vertex_colors)
-  texture_changed = {tile: _changed_flag(texture[tile]) for tile in tiles}
-  world_to_camera_changed = _changed_flag(world_to_camera)
-  camera_to_image_changed = _changed_flag(camera_to_image)
-
-  texture_objects = {}
-  colors = []
-  tqdm_kwargs = {'disable': not verbose, 'desc': 'Rendering', 'leave': False}
-  for f in tqdm.trange(0, num_frames, **tqdm_kwargs):
-    # Update anything that's changed.
-    if vertices_changed[f] or vertex_colors_changed[f]:
-      for m in range(num_meshes):
-        # b/487992965: Figure out a way to do this without re-creating the mesh.
-        mesh = _create_mesh(f, m)
-        if mesh_nodes[m] is not None:
-          scene.remove_node(mesh_nodes[m])
-        mesh_nodes[m] = scene.add(mesh)
-        for index in range(len(tiles)):
-          _apply_texture(mesh_nodes[m], texture_objects.get(index, None), index)
-
-    for index, tile in enumerate(tiles):
-      if texture_changed[tile][f]:
-        texture_objects[index] = _create_texture(f, tile)
-        for m in range(num_meshes):
-          mesh_node = mesh_nodes[m]
-          if mesh_node is not None:
-            _apply_texture(mesh_node, texture_objects[index], index)
-
-    if world_to_camera_changed[f]:
-      camera_to_world = np.linalg.inv(world_to_camera[f])
-      scene.set_pose(camera_node, camera_to_world)
-
-    if camera_to_image_changed[f]:
-      camera.set_projection_matrix(camera_to_image[f])
-
-    # Render.
-    color, depth = renderer.render(scene, flags=flags)
-    alpha_im = alpha * (depth > 0.0).astype(np.float32)
-
-    # Upsample background color for MSAA.
-    background = np.zeros_like(color)
-    if background_color is not None:
-      background = background_color[f]
-      if multisample_antialiasing > 1:
-        target_size = (render_width, render_height)
-        background = cv2.resize(
-            background, target_size, interpolation=cv2.INTER_AREA
-        )
-
-    # sRGB to linear.
-    color = np.clip(color.astype(np.float32) / 255.0, 0.0, 1.0)
-    color = np.power(color, 2.2)
-
-    # Alpha blending with background color.
-    color = color * alpha_im[..., np.newaxis] + background * (
-        1.0 - alpha_im[..., np.newaxis]
+  # pylint: disable=unexpected-keyword-arg
+  with GNMMeshRenderer(
+      triangles=triangles,
+      triangle_uvs=triangle_uvs,
+      vertex_colors=vertex_colors,
+      texture=texture,
+      multisample_antialiasing=multisample_antialiasing,
+      include_shading=include_shading,
+      verbose=verbose,
+      renderer_factory=renderer_factory,
+      _cameras_in_opengl=True,
+  ) as renderer:
+    # pylint: enable=unexpected-keyword-arg
+    output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+        vertex_colors=vertex_colors,
+        vertex_normals=vertex_normals,
+        multiple_gnms=vertices.ndim >= 4,
+        verbose=verbose,
     )
-
-    # Downsample for anti-aliasing.
-    if multisample_antialiasing > 1:
-      color = cv2.resize(color, (width, height), interpolation=cv2.INTER_AREA)
-
-    colors.append(color)
-
-  renderer.delete()
-  return np.array(colors, dtype=np.float32)
+  return output.composite(
+      background=0.0 if background_color is None else background_color,
+      alpha=alpha,
+      dtype=np.float32,
+  )
 
 
 @functools.cache

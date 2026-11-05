@@ -14,8 +14,7 @@
 
 """Visualization utilities for GNM."""
 
-import collections.abc
-import functools
+from collections.abc import Callable
 from typing import Any
 
 from gnm.shape import gnm_numpy
@@ -24,6 +23,9 @@ from gnm.shape.visualization import render_common
 import numpy as np
 import numpy.typing as npt
 
+GNMMeshRenderer = gnm_pyrender.GNMMeshRenderer
+MeshRenderOutput = render_common.MeshRenderOutput
+
 
 def render_gnm(
     gnm_np: gnm_numpy.GNM,
@@ -31,7 +33,7 @@ def render_gnm(
     world_to_camera: render_common.FloatArray | None = None,
     camera_to_image: render_common.FloatArray | None = None,
     image_size: tuple[int, int] = render_common.DEFAULT_IMAGE_SIZE,
-    triangles: str | npt.NDArray[np.integer] = '~eye_exteriors',
+    triangles: render_common.TriangleGroups = '~eye_exteriors',
     texture: render_common.Texture = render_common.DEFAULT_TEXTURE,
     multisample_antialiasing: int = 2,
     background_color: render_common.ColorOrImage = (
@@ -42,13 +44,13 @@ def render_gnm(
     multiple_gnms: bool = False,
     include_shading: bool = True,
     verbose: bool = False,
-    renderer_factory: collections.abc.Callable[..., Any] = (
+    renderer_factory: Callable[..., Any] = (
         gnm_pyrender.DEFAULT_RENDERER_FACTORY
     ),
 ) -> render_common.FloatArray:
   """Render GNM meshes.
 
-  Uses a pyrender backend to render GNM meshes.
+  Uses a pyrender backend (`GNMMeshRenderer`) to render GNM meshes.
 
   All arguments specified with (...) in their shape are batchable. They can have
   an arbitrary number of leading dimensions, but they must all be broadcastable
@@ -119,26 +121,36 @@ def render_gnm(
   Raises:
     ValueError: If multiple_gnms=True, but vertices is only 2D.
   """
-
-  backend_render_fn = functools.partial(
-      gnm_pyrender.render, renderer_factory=renderer_factory
+  vertices, world_to_camera, camera_to_image = (
+      render_common.resolve_gnm_camera_and_vertices(
+          gnm_np,
+          vertices=vertices,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          image_size=image_size,
+          multiple_gnms=multiple_gnms,
+      )
   )
-
-  return render_common.render_gnm_mesh(
+  # Ensure `renderer.close()` frees the offscreen OpenGL context on exit.
+  with GNMMeshRenderer.from_gnm(
       gnm_np=gnm_np,
-      backend_render_fn=backend_render_fn,
-      convert_cameras_to_opengl=True,
-      vertices=vertices,
-      world_to_camera=world_to_camera,
-      camera_to_image=camera_to_image,
-      image_size=image_size,
       triangles=triangles,
       texture=texture,
       multisample_antialiasing=multisample_antialiasing,
-      background_color=background_color,
-      alpha=alpha,
       vertex_colors=vertex_colors,
-      multiple_gnms=multiple_gnms,
       include_shading=include_shading,
       verbose=verbose,
+      renderer_factory=renderer_factory,
+  ) as renderer:
+    render_output: MeshRenderOutput = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+        multiple_gnms=multiple_gnms,
+    )
+  return render_output.composite(
+      background=background_color,
+      alpha=alpha,
+      dtype=np.float32,
   )
