@@ -14,11 +14,16 @@
 
 """A version of render_gnm that uses Mitsuba."""
 
+import contextlib
+
 from gnm.shape import gnm_numpy
 from gnm.shape.visualization import gnm_mitsuba
 from gnm.shape.visualization import render_common
 import numpy as np
 import numpy.typing as npt
+
+GNMMeshRenderer = gnm_mitsuba.GNMMeshRenderer
+MeshRenderOutput = render_common.MeshRenderOutput
 
 
 def render_gnm(
@@ -27,7 +32,7 @@ def render_gnm(
     world_to_camera: render_common.FloatArray | None = None,
     camera_to_image: render_common.FloatArray | None = None,
     image_size: tuple[int, int] = render_common.DEFAULT_IMAGE_SIZE,
-    triangles: str | npt.NDArray[np.integer] = '~eye_exteriors',
+    triangles: render_common.TriangleGroups = '~eye_exteriors',
     texture: render_common.Texture = render_common.DEFAULT_TEXTURE,
     multisample_antialiasing: int = 2,
     background_color: render_common.ColorOrImage = (
@@ -41,7 +46,7 @@ def render_gnm(
 ) -> render_common.FloatArray:
   """Render GNM meshes.
 
-  Uses a Mitsuba backend to render GNM meshes.
+  Uses a Mitsuba backend (`GNMMeshRenderer`) to render GNM meshes.
 
   All arguments specified with (...) in their shape are batchable. They can have
   an arbitrary number of leading dimensions, but they must all be broadcastable
@@ -112,23 +117,37 @@ def render_gnm(
     NotImplementedError: If camera_to_image contains non-square pixels
       (fx != fy) or skew.
   """
-  return render_common.render_gnm_mesh(
-      gnm_np=gnm_np,
-      backend_render_fn=(
-          gnm_mitsuba.render  # pyrefly: ignore[bad-argument-type]
-      ),
-      convert_cameras_to_opengl=False,
-      vertices=vertices,
-      world_to_camera=world_to_camera,
-      camera_to_image=camera_to_image,
-      image_size=image_size,
-      triangles=triangles,
-      texture=texture,
-      multisample_antialiasing=multisample_antialiasing,
-      background_color=background_color,
+  vertices, world_to_camera, camera_to_image = (
+      render_common.resolve_gnm_camera_and_vertices(
+          gnm_np,
+          vertices=vertices,
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          image_size=image_size,
+          multiple_gnms=multiple_gnms,
+      )
+  )
+  # Ensure `renderer.close()` flushes the Mitsuba/Dr.Jit cache on exit.
+  with contextlib.closing(
+      GNMMeshRenderer.from_gnm(
+          gnm_np=gnm_np,
+          triangles=triangles,
+          texture=texture,
+          multisample_antialiasing=multisample_antialiasing,
+          vertex_colors=vertex_colors,
+          include_shading=include_shading,
+          verbose=verbose,
+      )
+  ) as renderer:
+    render_output: MeshRenderOutput = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+        multiple_gnms=multiple_gnms,
+    )
+  return render_output.composite(
+      background=background_color,
       alpha=alpha,
-      vertex_colors=vertex_colors,
-      multiple_gnms=multiple_gnms,
-      include_shading=include_shading,
-      verbose=verbose,
+      dtype=np.float32,
   )

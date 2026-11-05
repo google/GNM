@@ -15,23 +15,26 @@
 """Render a GNM mesh with Mitsuba.
 
 This is the rendering backend of `render_gnm_mitsuba`, which prepares and
-batches its arguments; call `render_gnm_mitsuba.render_gnm` rather than `render`
-directly.
+batches its arguments; call `render_gnm_mitsuba.render_gnm` or `GNMMeshRenderer`
+rather than `render` directly.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Mapping
+import dataclasses
+from typing import Any, ClassVar, Self
 
 import cv2
 import drjit as dr
+from gnm.shape import gnm_numpy
+from gnm.shape import gnm_typing
 from gnm.shape.visualization import integrators
-from gnm.shape.visualization import udim
+from gnm.shape.visualization import render_common
 import mitsuba as mi
 import numpy as np
-import numpy.typing as npt
-import tqdm
+
+enpt = gnm_typing.enpt
 
 MITSUBA_USE_LEGACY_MESH_API = tuple(
     int(x)
@@ -43,14 +46,16 @@ MITSUBA_USE_LEGACY_MESH_API = tuple(
 
 
 def _create_mitsuba_mesh_legacy(
-    vertices: npt.NDArray[np.floating],
-    faces: npt.NDArray[np.integer],
+    vertices: enpt.FloatArray['V 3'],
+    faces: enpt.IntArray['F 3'],
     *,
-    texture_coordinates: npt.NDArray[np.floating] | None = None,
-    vertex_normals: npt.NDArray[np.floating] | None = None,
+    texture_coordinates: enpt.FloatArray['V 2'] | None = None,
+    vertex_normals: enpt.FloatArray['V 3'] | None = None,
     properties: mi.Properties | None = None,
     flip_texture_coordinates: bool = False,
-    vertex_colors: npt.NDArray[np.floating] | None = None,
+    vertex_colors: (
+        enpt.FloatArray['V 3'] | enpt.FloatArray['V 4'] | None
+    ) = None,
 ) -> mi.Mesh:
   """Instantiates a Mitsuba mesh using the legacy API (<= 3.9.1)."""
   if properties is None:
@@ -117,14 +122,16 @@ def _create_mitsuba_mesh_legacy(
 
 
 def create_mitsuba_mesh(
-    vertices: npt.NDArray[np.floating],
-    faces: npt.NDArray[np.integer],
+    vertices: enpt.FloatArray['V 3'],
+    faces: enpt.IntArray['F 3'],
     *,
-    texture_coordinates: npt.NDArray[np.floating] | None = None,
-    vertex_normals: npt.NDArray[np.floating] | None = None,
+    texture_coordinates: enpt.FloatArray['V 2'] | None = None,
+    vertex_normals: enpt.FloatArray['V 3'] | None = None,
     properties: mi.Properties | None = None,
     flip_texture_coordinates: bool = False,
-    vertex_colors: npt.NDArray[np.floating] | None = None,
+    vertex_colors: (
+        enpt.FloatArray['V 3'] | enpt.FloatArray['V 4'] | None
+    ) = None,
 ) -> mi.Mesh:
   """Instantiates a Mitsuba mesh from vertices, faces, UVs, and normals.
 
@@ -217,61 +224,46 @@ def create_mitsuba_mesh(
     return mi_mesh
 
 
-def _compute_camera_to_world_and_fov(
-    world_to_camera_cv: npt.NDArray[np.float32],
-    camera_to_image_cv: npt.NDArray[np.float32],
+def _create_sensor_dict(
+    world_to_camera: enpt.FloatArray['4 4'],
+    camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
     *,
     width: int,
     height: int,
-) -> tuple[npt.NDArray[np.float32], float, float, float]:
-  """Computes Mitsuba to_world transform, FOV, and principal point offsets.
-
-  Args:
-    world_to_camera_cv: The world-to-camera transform (OpenCV convention), (4,
-      4).
-    camera_to_image_cv: The camera-to-image transform (OpenCV convention), (4,
-      4) or (3, 3).
-    width: The width of the image in pixels.
-    height: The height of the image in pixels.
-
-  Returns:
-    A tuple of (to_world_mitsuba, fov_x, offset_x, offset_y).
-  """
-  fx = camera_to_image_cv[0, 0]
-  fy = camera_to_image_cv[1, 1]
-  skew = camera_to_image_cv[0, 1]
-  cx = camera_to_image_cv[0, 2]
-  cy = camera_to_image_cv[1, 2]
-
-  f_max = max(abs(fx), abs(fy), 1e-6)
-  if abs(fx - fy) / f_max > 1e-4 or abs(skew) / f_max > 1e-4:
-    raise NotImplementedError(
-        'Mitsuba sensor only supports square pixels (fx == fy) and zero skew, '
-        f'got fx={fx}, fy={fy}, skew={skew}.'
-    )
-
-  focal_length = (fx + fy) / 2.0
-  fov_x = np.rad2deg(2.0 * np.arctan(width / (2.0 * focal_length)))
-  offset_x = 0.5 - cx / width
-  offset_y = 0.5 - cy / height
-
-  if world_to_camera_cv.shape == (3, 4):
-    row = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=world_to_camera_cv.dtype)
-    world_to_camera_cv = np.concatenate([world_to_camera_cv, row], axis=0)
-
-  # OpenCV camera-to-world: inv(world_to_camera)
-  c2w_cv = np.linalg.inv(world_to_camera_cv)
-
-  # Mitsuba camera coordinate frame transform: diag(-1, -1, 1, 1)
-  coord_transform = np.diag([-1.0, -1.0, 1.0, 1.0]).astype(np.float32)
-  to_world_mitsuba = (c2w_cv @ coord_transform).astype(np.float32)
-
-  return to_world_mitsuba, float(fov_x), float(offset_x), float(offset_y)
+    render_width: int,
+    render_height: int,
+    spp: int,
+) -> dict[str, Any]:
+  """Constructs the dictionary spec for a Mitsuba perspective sensor."""
+  fov_x, offset_x, offset_y, to_world_mitsuba = _compute_sensor_parameters(
+      world_to_camera=world_to_camera,
+      camera_to_image=camera_to_image,
+      width=width,
+      height=height,
+  )
+  return {
+      'type': 'perspective',
+      'fov': fov_x,
+      'principal_point_offset_x': offset_x,
+      'principal_point_offset_y': offset_y,
+      'to_world': mi.ScalarTransform4f(to_world_mitsuba),
+      'film': {
+          'type': 'hdrfilm',
+          'width': render_width,
+          'height': render_height,
+          'pixel_format': 'rgba',
+          'rfilter': {'type': 'box'},
+      },
+      'sampler': {
+          'type': 'independent',
+          'sample_count': spp,
+      },
+  }
 
 
 def _compute_world_light_direction(
-    world_to_camera_cv: npt.NDArray[np.float32],
-) -> npt.NDArray[np.float32]:
+    world_to_camera_cv: enpt.FloatArray['4 4'],
+) -> enpt.FloatArray['3']:
   """Computes unit vector in world space pointing TO the light source.
 
   Args:
@@ -292,402 +284,489 @@ def _compute_world_light_direction(
   return l_world.astype(np.float32)
 
 
-def _prepare_tile_textures(
-    *,
-    texture: (
-        Mapping[int, npt.NDArray[np.floating] | npt.NDArray[np.uint8]] | None
-    ),
-    tiles: Sequence[int],
-    num_frames: int,
-    max_texture_dimension: int,
-) -> dict[int, list[npt.NDArray[np.float32]]]:
-  """Prepares contiguous float32 textures per UDIM tile and frame.
+@dataclasses.dataclass(kw_only=True)
+class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
+  """Stateful Mitsuba 3D mesh renderer for `gnm_numpy.GNM` models.
 
-  Args:
-    texture: Optional mapping from UDIM tile number to per-frame texture arrays
-      of shape (N, H, W, C).
-    tiles: Ordered sequence of UDIM tile numbers.
-    num_frames: Number of frames to render.
-    max_texture_dimension: Maximum allowed texture width or height before
-      downsampling.
-
-  Returns:
-    A dictionary mapping each UDIM tile number to a list of prepared float32
-    texture arrays of length `num_frames`. Adjacent identical frames reuse the
-    same array instance.
+  Attributes:
+    spp: Raytracing samples per pixel. Defaults to 4.
   """
-  # Tiles without a texture are rendered plain white.
-  default_texture = np.ones((num_frames, 1, 1, 3), dtype=np.float32)
-  texture_dict = texture or {}
 
-  prepared_textures: dict[int, list[npt.NDArray[np.float32]]] = {}
-  for tile in tiles:
-    tile_textures = texture_dict.get(tile, default_texture)
-    frame_textures: list[npt.NDArray[np.float32]] = []
-    for frame in range(num_frames):
-      if frame > 0 and np.array_equal(
-          tile_textures[frame], tile_textures[frame - 1]
-      ):
-        frame_textures.append(frame_textures[-1])
-        continue
+  _progress_bar_desc: ClassVar[str] = 'Rendering (Mitsuba)'
 
-      texture_float = tile_textures[frame].astype(np.float32, copy=False)
-      if tile_textures.dtype == np.uint8:
-        texture_float = texture_float / 255.0
-      texture_float = np.clip(texture_float, 0.0, 1.0)
-      texture_height, texture_width = texture_float.shape[:2]
+  spp: int = 4
+
+  def __post_init__(self) -> None:
+    super().__post_init__()
+    _ensure_mitsuba_initialized()
+
+  @classmethod
+  def from_gnm(
+      cls,
+      gnm_np: gnm_numpy.GNM,
+      *,
+      triangles: render_common.TriangleGroups = '~eye_exteriors',
+      texture: render_common.Texture = render_common.DEFAULT_TEXTURE,
+      multisample_antialiasing: int = 1,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      include_shading: bool = True,
+      verbose: bool = False,
+      spp: int = 4,
+  ) -> Self:
+    """Instantiates a Mitsuba mesh renderer from a NumPy GNM shape model.
+
+    Args:
+      gnm_np: NumPy GNM shape model.
+      triangles: Vertex group expression string, sequence of group strings, or
+        1D face index array.
+      texture: Optional per-UDIM-tile texture mapping, single array for
+        `SKIN_UDIM_TILE`, `DEFAULT_TEXTURE` for the default edgeflow texture, or
+        None for plain white textures.
+      multisample_antialiasing: Supersampling factor for anti-aliasing. Defaults
+        to 1 (native resolution).
+      vertex_colors: Optional per-vertex RGB colors of shape (..., V, 3).
+        Defaults to standard GNM per-component vertex colors.
+      include_shading: Whether to include directional lighting/shading. Defaults
+        to True.
+      verbose: Default flag controlling whether to display a progress bar.
+      spp: Raytracing samples per pixel. Defaults to 4.
+
+    Returns:
+      A new `GNMMeshRenderer` instance configured for `gnm_np`.
+    """
+    renderer = super().from_gnm(
+        gnm_np,
+        triangles=triangles,
+        texture=texture,
+        multisample_antialiasing=multisample_antialiasing,
+        vertex_colors=vertex_colors,
+        include_shading=include_shading,
+        verbose=verbose,
+    )
+    renderer.spp = spp
+    return renderer
+
+  _cached_bitmaps: dict[tuple[int, int], mi.Bitmap] = dataclasses.field(
+      default_factory=dict, init=False, repr=False, compare=False
+  )
+  _scene: mi.Scene | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _scene_params: mi.SceneParameters | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _mesh_keys: tuple[str, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _mesh_indices: tuple[int, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _active_tiles: tuple[int, ...] = dataclasses.field(
+      default=(), init=False, repr=False, compare=False
+  )
+  _num_meshes: int = dataclasses.field(
+      default=1, init=False, repr=False, compare=False
+  )
+  _sensor: mi.Sensor | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _sensor_params: mi.SceneParameters | None = dataclasses.field(
+      default=None, init=False, repr=False, compare=False
+  )
+  _light_direction: enpt.FloatArray['3'] | None = dataclasses.field(
+      default=None,
+      init=False,
+      repr=False,
+      compare=False,
+  )
+
+  def update_vertices(
+      self,
+      vertices: enpt.FloatArray['... V 3'],
+      vertex_normals: enpt.FloatArray['... V 3'] | None = None,
+      *,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates the Mitsuba scene mesh vertices and normals in-place."""
+    vertices, vertex_normals = self._prepare_vertices_and_normals(
+        vertices, vertex_normals
+    )
+
+    num_meshes = int(vertices.shape[0])
+
+    with dr.suspend_grad():
       if (
-          texture_height > max_texture_dimension
-          or texture_width > max_texture_dimension
+          self._scene is None
+          or self._scene_params is None
+          or self._num_meshes != num_meshes
       ):
-        scale = max_texture_dimension / max(texture_height, texture_width)
-        resized_width = max(1, int(round(texture_width * scale)))
-        resized_height = max(1, int(round(texture_height * scale)))
-        texture_float = cv2.resize(
-            texture_float,
-            (resized_width, resized_height),
-            interpolation=cv2.INTER_AREA,
+        self._initialize_scene(
+            vertices, vertex_normals, max_texture_dim=max_texture_dim
         )
-      if texture_float.ndim == 2:
-        texture_float = texture_float[..., np.newaxis]
-      elif texture_float.ndim == 3 and texture_float.shape[2] == 4:
-        texture_float = texture_float[..., :3]
-      texture_height, texture_width = texture_float.shape[:2]
-      if texture_height < 2 or texture_width < 2:
-        texture_float = np.pad(
-            texture_float,
-            (
-                (0, max(0, 2 - texture_height)),
-                (0, max(0, 2 - texture_width)),
-                (0, 0),
-            ),
-            mode='edge',
-        )
-      frame_textures.append(
-          np.ascontiguousarray(texture_float, dtype=np.float32)
+        return
+
+      if MITSUBA_USE_LEGACY_MESH_API:
+        for mesh_key, mesh_index, tile in zip(
+            self._mesh_keys, self._mesh_indices, self._active_tiles, strict=True
+        ):
+          corners = self._tile_geometry[tile][0]
+          self._scene_params[f'{mesh_key}.vertex_positions'] = np.ravel(
+              vertices[mesh_index][corners]
+          )
+          self._scene_params[f'{mesh_key}.vertex_normals'] = np.ravel(
+              vertex_normals[mesh_index][corners]
+          )
+      else:
+        for mesh_key, mesh_index, tile in zip(
+            self._mesh_keys, self._mesh_indices, self._active_tiles, strict=True
+        ):
+          corners = self._tile_geometry[tile][0]
+          self._scene_params[f'{mesh_key}.positions'] = mi.TensorXf32(
+              vertices[mesh_index][corners]
+          )
+          self._scene_params[f'{mesh_key}.normals'] = mi.TensorXf32(
+              vertex_normals[mesh_index][corners]
+          )
+      self._scene_params.update()
+
+  def update_camera(
+      self,
+      world_to_camera: enpt.FloatArray['4 4'],
+      camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+      image_size: tuple[int, int],
+  ) -> None:
+    """Updates camera pose and projection matrices in OpenCV convention."""
+    world_to_camera = np.asarray(world_to_camera, dtype=np.float32)
+    camera_to_image = np.asarray(camera_to_image, dtype=np.float32)
+
+    if self._sensor is not None and self._is_camera_cached(
+        world_to_camera, camera_to_image, image_size
+    ):
+      return
+
+    width, height = image_size
+    render_width = width * self.multisample_antialiasing
+    render_height = height * self.multisample_antialiasing
+
+    light_direction = _compute_world_light_direction(world_to_camera)
+
+    if self._sensor is None or self._cached_image_size != image_size:
+      sensor_dict = _create_sensor_dict(
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
+          width=width,
+          height=height,
+          render_width=render_width,
+          render_height=render_height,
+          spp=self.spp,
       )
-    prepared_textures[tile] = frame_textures
-  return prepared_textures
-
-
-def _create_mitsuba_sensor(
-    *,
-    world_to_camera_cv: npt.NDArray[np.float32],
-    camera_to_image_cv: npt.NDArray[np.float32],
-    width: int,
-    height: int,
-    render_width: int,
-    render_height: int,
-) -> mi.Sensor:
-  """Instantiates the Mitsuba perspective sensor for the initial frame.
-
-  Args:
-    world_to_camera_cv: The world-to-camera transform (OpenCV convention), (4,
-      4).
-    camera_to_image_cv: The camera-to-image transform (OpenCV convention), (4,
-      4) or (3, 3).
-    width: The target output image width in pixels.
-    height: The target output image height in pixels.
-    render_width: The supersampled film width in pixels.
-    render_height: The supersampled film height in pixels.
-
-  Returns:
-    A configured `mi.Sensor` instance.
-  """
-  to_world_mitsuba, fov_x, offset_x, offset_y = (
-      _compute_camera_to_world_and_fov(
-          world_to_camera_cv=world_to_camera_cv,
-          camera_to_image_cv=camera_to_image_cv,
+      with dr.suspend_grad():
+        sensor = mi.load_dict(sensor_dict)
+      self._sensor = sensor
+      self._sensor_params = None
+    else:
+      fov_x, offset_x, offset_y, to_world_mitsuba = _compute_sensor_parameters(
+          world_to_camera=world_to_camera,
+          camera_to_image=camera_to_image,
           width=width,
           height=height,
       )
-  )
-  sensor_dict = {
-      'type': 'perspective',
-      'fov': fov_x,
-      'principal_point_offset_x': offset_x,
-      'principal_point_offset_y': offset_y,
-      'to_world': mi.ScalarTransform4f(to_world_mitsuba),
-      'film': {
-          'type': 'hdrfilm',
-          'width': render_width,
-          'height': render_height,
-          'pixel_format': 'rgba',
-          'rfilter': {'type': 'box'},
-      },
-      'sampler': {
-          'type': 'independent',
-          'sample_count': 4,
-      },
-  }
-  return mi.load_dict(sensor_dict)
+      with dr.suspend_grad():
+        sensor_params = self._sensor_params
+        if sensor_params is None:
+          sensor_params = mi.traverse(self._sensor)
+          self._sensor_params = sensor_params
+        sensor_params['x_fov'] = fov_x
+        sensor_params['principal_point_offset_x'] = offset_x
+        sensor_params['principal_point_offset_y'] = offset_y
+        sensor_params['to_world'] = mi.ScalarTransform4f(to_world_mitsuba)
+        sensor_params.update()
 
+    self._cache_camera(world_to_camera, camera_to_image, image_size)
+    self._light_direction = light_direction
 
-def _index_optional(
-    array: npt.NDArray[np.float32] | None,
-    index: int | slice | npt.NDArray[np.int32] | tuple[int | slice, ...],
-) -> npt.NDArray[np.float32] | None:
-  """Returns `array[index]` when `array` is not `None`, otherwise `None`."""
-  return array[index] if array is not None else None
+    if self._scene is not None:
+      integrator = self._scene.integrator()
+      if integrator is not None:
+        setattr(
+            integrator,
+            'light_dir',
+            mi.ScalarVector3f(
+                float(light_direction[0]),
+                float(light_direction[1]),
+                float(light_direction[2]),
+            ),
+        )
 
+  def close(self) -> None:
+    """Releases cached Mitsuba scene, sensor, and bitmap state."""
+    super().close()
+    self._cached_bitmaps.clear()
+    self._scene = None
+    self._scene_params = None
+    self._sensor = None
+    self._sensor_params = None
+    self._light_direction = None
+    self._mesh_keys = ()
+    self._mesh_indices = ()
+    self._active_tiles = ()
+    dr.flush_malloc_cache()
 
-def _create_mitsuba_scene(
-    *,
-    vertices_frame: npt.NDArray[np.float32],
-    tile_corners: Mapping[int, npt.NDArray[np.int32]],
-    tile_uvs: Mapping[int, npt.NDArray[np.float32]],
-    tiles: Sequence[int],
-    vertex_normals_frame: npt.NDArray[np.float32] | None,
-    vertex_colors_frame: npt.NDArray[np.float32] | None,
-    prepared_textures: Mapping[int, Sequence[npt.NDArray[np.float32]]],
-    world_to_camera_cv: npt.NDArray[np.float32],
-    include_shading: bool,
-) -> mi.Scene:
-  """Instantiates the Mitsuba scene and tile meshes for the initial frame.
+  def _update_frame_appearance(
+      self,
+      *,
+      vertex_colors: enpt.FloatArray['... V 3'] | None = None,
+      frame_textures: (
+          Mapping[int, enpt.ui8['H_texture W_texture 3']] | None
+      ) = None,
+      max_texture_dim: int = 1024,
+  ) -> None:
+    """Updates active per-frame vertex colors and Mitsuba textures in-place."""
+    super()._update_frame_appearance(
+        vertex_colors=vertex_colors,
+        frame_textures=frame_textures,
+        max_texture_dim=max_texture_dim,
+    )
+    if frame_textures is not None:
+      for tile in frame_textures:
+        self._cached_bitmaps.pop((tile, max_texture_dim), None)
+    if self._scene_params is not None and (
+        vertex_colors is not None or frame_textures is not None
+    ):
+      colors_per_mesh: enpt.FloatArray['M V 3'] | None = None
+      if vertex_colors is not None:
+        colors = self._active_vertex_colors
+        if colors.ndim == 2:
+          colors = np.broadcast_to(
+              colors[np.newaxis, :, :],
+              (self._num_meshes, *colors.shape),
+          )
+        colors_per_mesh = colors
+      with dr.suspend_grad():
+        for mesh_key, mesh_index, tile in zip(
+            self._mesh_keys, self._mesh_indices, self._active_tiles, strict=True
+        ):
+          if colors_per_mesh is not None:
+            corners = self._tile_geometry[tile][0]
+            tile_colors = np.asarray(
+                colors_per_mesh[mesh_index][corners], dtype=np.float32
+            )
+            if MITSUBA_USE_LEGACY_MESH_API:
+              self._scene_params[f'{mesh_key}.vertex_colors'] = np.ravel(
+                  tile_colors
+              )
+            else:
+              self._scene_params[f'{mesh_key}.vertex_colors'] = mi.TensorXf32(
+                  tile_colors
+              )
+          if frame_textures is not None and tile in frame_textures:
+            bitmap = self._get_tile_bitmap(tile, max_texture_dim)
+            self._scene_params[f'{mesh_key}.bsdf.reflectance.data'] = (
+                mi.TensorXf(bitmap)
+            )
+        self._scene_params.update()
 
-  Args:
-    vertices_frame: Vertex positions for the initial frame, (M, V, 3).
-    tile_corners: Mapping from UDIM tile number to unwelded corner vertex
-      indices.
-    tile_uvs: Mapping from UDIM tile number to unwelded corner UV coordinates.
-    tiles: Ordered sequence of UDIM tile numbers.
-    vertex_normals_frame: Optional vertex normals for the initial frame, (M, V,
-      3).
-    vertex_colors_frame: Optional vertex colors for the initial frame, (M, V,
-      3).
-    prepared_textures: Prepared per-tile textures for each frame.
-    world_to_camera_cv: Initial frame world-to-camera transform, (4, 4).
-    include_shading: Whether half-Lambert shading is enabled in the integrator.
+  def _on_triangles_updated(self) -> None:
+    """Invalidates the Mitsuba scene after `self.triangles` changes."""
+    if self._scene is not None:
+      self._scene = None
+      self._scene_params = None
+      self._mesh_keys = ()
+      self._mesh_indices = ()
+      self._active_tiles = ()
 
-  Returns:
-    A configured `mi.Scene` instance.
-  """
-  light_direction_world = _compute_world_light_direction(world_to_camera_cv)
-  scene_dict: dict[str, Any] = {
-      'type': 'scene',
-      'integrator': {
-          'type': 'gnm_half_lambert',
-          'light_dir': mi.ScalarVector3f(
-              light_direction_world[0],
-              light_direction_world[1],
-              light_direction_world[2],
-          ),
-          'include_shading': include_shading,
-      },
-  }
+  def _render_single_frame(
+      self,
+      width: int,
+      height: int,
+  ) -> tuple[enpt.FloatArray['H W 3'], enpt.FloatArray['H W 1']]:
+    """Renders the current Mitsuba scene and sensor for one frame.
 
-  num_meshes = vertices_frame.shape[0]
-  mesh_counter = 0
-  for mesh_index in range(num_meshes):
-    mesh_normals = _index_optional(vertex_normals_frame, mesh_index)
-    mesh_colors = _index_optional(vertex_colors_frame, mesh_index)
-    for tile in tiles:
-      corners = tile_corners[tile]
+    Args:
+      width: Target output width in pixels.
+      height: Target output height in pixels.
+
+    Returns:
+      A tuple of `(frame_rgb, frame_alpha)` as float32 arrays of shapes
+      `(height, width, 3)` and `(height, width, 1)`.
+
+    Raises:
+      RuntimeError: If the Mitsuba scene or sensor is not initialized.
+    """
+    if self._scene is None or self._sensor is None:
+      raise RuntimeError(
+          'Mitsuba scene and sensor must be initialized before rendering.'
+      )
+    with dr.suspend_grad():
+      image_film = mi.render(self._scene, sensor=self._sensor, spp=self.spp)
+
+      foreground_rgb = dr.clip(image_film[..., :3], 0.0, 1.0)
+      raw_alpha = image_film[..., 3:4]
+      subpixel_alpha = dr.select(
+          raw_alpha > 0.0, dr.ones_like(raw_alpha), dr.zeros_like(raw_alpha)
+      )
+      premultiplied_rgb = foreground_rgb * subpixel_alpha
+
+      if self.multisample_antialiasing > 1:
+        premultiplied_rgb = dr.resample(
+            premultiplied_rgb, shape=(height, width, 3), filter='box'
+        )
+        msaa_alpha = dr.resample(
+            subpixel_alpha, shape=(height, width, 1), filter='box'
+        )
+      else:
+        msaa_alpha = subpixel_alpha
+
+      safe_alpha = dr.maximum(msaa_alpha, 1e-6)
+      clipped_rgb = dr.clip(premultiplied_rgb / safe_alpha, 0.0, 1.0)
+      unpremultiplied_rgb = dr.select(
+          msaa_alpha > 0.0,
+          clipped_rgb,
+          dr.zeros_like(clipped_rgb),
+      )
+      frame_rgb = np.asarray(unpremultiplied_rgb, dtype=np.float32)
+      frame_alpha = np.asarray(msaa_alpha, dtype=np.float32)
+      del image_film
+    return frame_rgb, frame_alpha
+
+  def _after_batch_render(self) -> None:
+    dr.flush_malloc_cache()
+
+  def _get_tile_bitmap(self, tile: int, max_texture_dim: int) -> mi.Bitmap:
+    """Returns a cached `mi.Bitmap` for `tile` at `max_texture_dim`."""
+    cache_key = (tile, max_texture_dim)
+    cached_bitmap = self._cached_bitmaps.get(cache_key)
+    if cached_bitmap is not None:
+      return cached_bitmap
+
+    texture_frame = self._active_textures[tile]
+    bitmap = _prepare_texture_bitmap(
+        texture_frame=texture_frame,
+        max_texture_dim=max_texture_dim,
+    )
+    self._cached_bitmaps[cache_key] = bitmap
+    return bitmap
+
+  def _initialize_scene(
+      self,
+      vertices: enpt.FloatArray['M V 3'],
+      vertex_normals: enpt.FloatArray['M V 3'],
+      *,
+      max_texture_dim: int,
+  ) -> None:
+    """Constructs the initial `mi.Scene` and caches `mi.traverse(scene)`."""
+    light_direction = self._light_direction
+    if light_direction is None:
+      light_direction = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    num_meshes = int(vertices.shape[0])
+    active_colors = self._active_vertex_colors
+    if active_colors.size == 0:
+      colors_per_mesh = None
+    elif active_colors.ndim == 2:
+      colors_per_mesh = np.broadcast_to(
+          active_colors[np.newaxis, ...], (num_meshes, *active_colors.shape)
+      )
+    else:
+      colors_per_mesh = active_colors
+
+    tile_bsdfs: dict[int, mi.Properties] = {}
+    for tile, (corners, _, _) in self._tile_geometry.items():
       if corners.size == 0:
         continue
-      faces = np.arange(corners.size, dtype=np.int32).reshape(-1, 3)
-
       properties = mi.Properties()
       properties['bsdf'] = mi.load_dict({
           'type': 'diffuse',
           'reflectance': {
               'type': 'bitmap',
-              'bitmap': mi.Bitmap(prepared_textures[tile][0]),
+              'bitmap': self._get_tile_bitmap(tile, max_texture_dim),
               'raw': True,
               'filter_type': 'bilinear',
           },
       })
+      tile_bsdfs[tile] = properties
 
-      mesh_part = create_mitsuba_mesh(
-          vertices=vertices_frame[mesh_index][corners],
-          faces=faces,
-          texture_coordinates=tile_uvs[tile],
-          vertex_normals=_index_optional(mesh_normals, corners),
-          vertex_colors=_index_optional(mesh_colors, corners),
-          properties=properties,
-          flip_texture_coordinates=True,
+    meshes = {}
+    mesh_keys: list[str] = []
+    mesh_indices: list[int] = []
+    active_tiles: list[int] = []
+    mesh_counter = 0
+
+    for mesh_index in range(num_meshes):
+      mesh_colors = (
+          colors_per_mesh[mesh_index] if colors_per_mesh is not None else None
       )
-      scene_dict[f'mesh_{mesh_counter}'] = mesh_part
-      mesh_counter += 1
-
-  return mi.load_dict(scene_dict)
-
-
-def _update_mitsuba_sensor(
-    *,
-    sensor_parameters: mi.SceneParameters,
-    world_to_camera_cv: npt.NDArray[np.float32],
-    camera_to_image_cv: npt.NDArray[np.float32],
-    width: int,
-    height: int,
-) -> None:
-  """Updates the Mitsuba perspective sensor parameters for the current frame.
-
-  Args:
-    sensor_parameters: Traversable parameters of the Mitsuba sensor.
-    world_to_camera_cv: Current frame world-to-camera transform, (4, 4).
-    camera_to_image_cv: Current frame camera-to-image transform, (4, 4) or (3,
-      3).
-    width: Target output image width in pixels.
-    height: Target output image height in pixels.
-  """
-  to_world_mitsuba, fov_x, offset_x, offset_y = (
-      _compute_camera_to_world_and_fov(
-          world_to_camera_cv=world_to_camera_cv,
-          camera_to_image_cv=camera_to_image_cv,
-          width=width,
-          height=height,
-      )
-  )
-  sensor_parameters['x_fov'] = fov_x
-  sensor_parameters['principal_point_offset_x'] = offset_x
-  sensor_parameters['principal_point_offset_y'] = offset_y
-  sensor_parameters['to_world'] = mi.ScalarTransform4f(to_world_mitsuba)
-  sensor_parameters.update()
-
-
-def _update_mitsuba_scene(
-    *,
-    scene_parameters: mi.SceneParameters,
-    vertices: npt.NDArray[np.float32],
-    vertex_normals: npt.NDArray[np.float32] | None,
-    vertex_colors: npt.NDArray[np.float32] | None,
-    tile_corners: Mapping[int, npt.NDArray[np.int32]],
-    tiles: Sequence[int],
-    prepared_textures: Mapping[int, Sequence[npt.NDArray[np.float32]]],
-    world_to_camera: npt.NDArray[np.float32],
-    frame: int,
-) -> None:
-  """Updates Mitsuba scene light direction, mesh attributes, and textures.
-
-  Args:
-    scene_parameters: Traversable parameters of the Mitsuba scene.
-    vertices: All frames' vertex positions, (N, M, V, 3).
-    vertex_normals: Optional per-frame vertex normals, (N, M, V, 3).
-    vertex_colors: Optional per-frame vertex colors, (N, M, V, 3).
-    tile_corners: Mapping from UDIM tile number to unwelded corner vertex
-      indices.
-    tiles: Ordered sequence of UDIM tile numbers.
-    prepared_textures: Prepared per-tile textures for each frame.
-    world_to_camera: All frames' world-to-camera transforms, (N, 4, 4).
-    frame: Index of the current frame (`frame > 0`).
-  """
-  scene_updated = False
-  if not np.array_equal(world_to_camera[frame], world_to_camera[frame - 1]):
-    light_direction_world = _compute_world_light_direction(
-        world_to_camera[frame]
-    )
-    scene_parameters['integrator.light_dir'] = mi.ScalarVector3f(
-        light_direction_world[0],
-        light_direction_world[1],
-        light_direction_world[2],
-    )
-    scene_updated = True
-
-  num_meshes = vertices.shape[1]
-  mesh_counter = 0
-  for mesh_index in range(num_meshes):
-    vertices_changed = not np.array_equal(
-        vertices[frame, mesh_index], vertices[frame - 1, mesh_index]
-    )
-    normals_changed = vertex_normals is not None and not np.array_equal(
-        vertex_normals[frame, mesh_index],
-        vertex_normals[frame - 1, mesh_index],
-    )
-    colors_changed = vertex_colors is not None and not np.array_equal(
-        vertex_colors[frame, mesh_index],
-        vertex_colors[frame - 1, mesh_index],
-    )
-    update_geometry = vertices_changed or normals_changed
-    frame_positions = vertices[frame, mesh_index] if update_geometry else None
-    frame_normals = (
-        _index_optional(vertex_normals, (frame, mesh_index))
-        if update_geometry
-        else None
-    )
-    frame_colors = (
-        _index_optional(vertex_colors, (frame, mesh_index))
-        if colors_changed
-        else None
-    )
-    for tile in tiles:
-      corners = tile_corners[tile]
-      if corners.size == 0:
-        continue
-
-      if frame_positions is not None:
-        tile_positions = frame_positions[corners]
-        if MITSUBA_USE_LEGACY_MESH_API:
-          scene_parameters[f'mesh_{mesh_counter}.vertex_positions'] = np.ravel(
-              tile_positions
-          )
-        else:
-          scene_parameters[f'mesh_{mesh_counter}.positions'] = mi.TensorXf32(
-              tile_positions
-          )
-        scene_updated = True
-
-      if frame_normals is not None:
-        tile_normals = frame_normals[corners]
-        if MITSUBA_USE_LEGACY_MESH_API:
-          scene_parameters[f'mesh_{mesh_counter}.vertex_normals'] = np.ravel(
-              tile_normals
-          )
-        else:
-          scene_parameters[f'mesh_{mesh_counter}.normals'] = mi.TensorXf32(
-              tile_normals
-          )
-        scene_updated = True
-
-      if frame_colors is not None:
-        tile_colors = frame_colors[corners]
-        if MITSUBA_USE_LEGACY_MESH_API:
-          scene_parameters[f'mesh_{mesh_counter}.vertex_colors'] = np.ravel(
-              tile_colors
-          )
-        else:
-          scene_parameters[f'mesh_{mesh_counter}.vertex_colors'] = (
-              mi.TensorXf32(tile_colors)
-          )
-        scene_updated = True
-
-      if (
-          prepared_textures[tile][frame]
-          is not prepared_textures[tile][frame - 1]
-      ):
-        scene_parameters[f'mesh_{mesh_counter}.bsdf.reflectance.data'] = (
-            mi.TensorXf(prepared_textures[tile][frame])
+      for tile, (corners, faces, tile_uvs) in self._tile_geometry.items():
+        if corners.size == 0:
+          continue
+        mesh_part = create_mitsuba_mesh(
+            vertices=vertices[mesh_index][corners],
+            faces=faces,
+            texture_coordinates=tile_uvs,
+            vertex_normals=vertex_normals[mesh_index][corners],
+            vertex_colors=(
+                mesh_colors[corners] if mesh_colors is not None else None
+            ),
+            properties=tile_bsdfs[tile],
+            flip_texture_coordinates=True,
         )
-        scene_updated = True
+        mesh_key = f'mesh_{mesh_counter}'
+        meshes[mesh_key] = mesh_part
+        mesh_keys.append(mesh_key)
+        mesh_indices.append(mesh_index)
+        active_tiles.append(tile)
+        mesh_counter += 1
 
-      mesh_counter += 1
-
-  if scene_updated:
-    scene_parameters.update()
+    scene_dict = {
+        'type': 'scene',
+        'integrator': {
+            'type': 'gnm_half_lambert',
+            'light_dir': mi.ScalarVector3f(
+                float(light_direction[0]),
+                float(light_direction[1]),
+                float(light_direction[2]),
+            ),
+            'include_shading': self.include_shading,
+        },
+        **meshes,
+    }
+    scene = mi.load_dict(scene_dict)
+    scene_params = mi.traverse(scene)
+    self._scene = scene
+    self._scene_params = scene_params
+    self._mesh_keys = tuple(mesh_keys)
+    self._mesh_indices = tuple(mesh_indices)
+    self._active_tiles = tuple(active_tiles)
+    self._num_meshes = num_meshes
 
 
 def render(
     *,
-    vertices: npt.NDArray[np.floating],
-    triangles: npt.NDArray[np.integer],
-    world_to_camera: npt.NDArray[np.floating],
-    camera_to_image: npt.NDArray[np.floating],
-    vertex_normals: npt.NDArray[np.floating],
-    triangle_uvs: npt.NDArray[np.floating],
-    vertex_colors: npt.NDArray[np.floating],
+    vertices: enpt.FloatArray['N M V 3'],
+    triangles: enpt.IntArray['F 3'],
+    world_to_camera: enpt.FloatArray['N 4 4'],
+    camera_to_image: enpt.FloatArray['N 4 4'] | enpt.FloatArray['N 3 3'],
+    vertex_normals: enpt.FloatArray['N M V 3'],
+    triangle_uvs: enpt.FloatArray['F 3 2'],
+    vertex_colors: enpt.FloatArray['N M V 3'],
     image_size: tuple[int, int] = (240, 320),
     texture: (
-        Mapping[int, npt.NDArray[np.floating] | npt.NDArray[np.uint8]] | None
+        Mapping[
+            int,
+            enpt.FloatArray['N H_texture W_texture 3']
+            | enpt.ui8['N H_texture W_texture 3'],
+        ]
+        | None
     ) = None,
     multisample_antialiasing: int = 1,
-    background_color: npt.NDArray[np.floating] | None = None,
+    background_color: enpt.FloatArray['N H W 3'] | None = None,
     alpha: float = 1.0,
     include_shading: bool = True,
     verbose: bool = False,
-) -> npt.NDArray[np.float32]:
+) -> enpt.FloatArray['N H W 3']:
   """Renders GNM meshes using Mitsuba.
 
-  N frames, M meshes. See `render_common.BackendRenderFn`.
+  N frames, M meshes.
 
   Args:
     vertices: The GNM vertices in world space, (N, M, V, 3).
@@ -714,139 +793,120 @@ def render(
   Returns:
     The rendered color image, float32 [0-1] (N, H, W, 3).
   """
+  width, height = image_size
+  if vertices.shape[0] == 0:
+    return np.empty((0, height, width, 3), dtype=np.float32)
+  # pylint: disable=unexpected-keyword-arg
+  renderer = GNMMeshRenderer(
+      triangles=triangles,
+      triangle_uvs=triangle_uvs,
+      vertex_colors=vertex_colors,
+      texture=texture,
+      multisample_antialiasing=multisample_antialiasing,
+      include_shading=include_shading,
+      verbose=verbose,
+  )
+  # pylint: enable=unexpected-keyword-arg
+  try:
+    output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=image_size,
+        vertex_colors=vertex_colors,
+        vertex_normals=vertex_normals,
+        multiple_gnms=vertices.ndim >= 4,
+        verbose=verbose,
+    )
+  finally:
+    renderer.close()
+  return output.composite(
+      background=0.0 if background_color is None else background_color,
+      alpha=alpha,
+      dtype=np.float32,
+  )
+
+
+def _ensure_mitsuba_initialized() -> None:
+  """Initializes the Mitsuba variant and registers custom GNM integrators."""
   if not mi.variant():
     mi.set_variant('cuda_ad_rgb', 'llvm_ad_rgb')
   integrators.register()
 
-  num_frames = vertices.shape[0]
-  width, height = image_size
-  if num_frames == 0:
-    return np.empty((0, height, width, 3), dtype=np.float32)
 
-  vertices = vertices.astype(np.float32, copy=False)
-  triangles_int32 = triangles.astype(np.int32, copy=False)
-  world_to_camera = world_to_camera.astype(np.float32, copy=False)
-  camera_to_image = camera_to_image.astype(np.float32, copy=False)
-  if vertex_normals is not None:
-    vertex_normals = vertex_normals.astype(np.float32, copy=False)
-  if vertex_colors is not None:
-    vertex_colors = vertex_colors[..., :3].astype(np.float32, copy=False)
-  if background_color is not None:
-    background_color = background_color.astype(np.float32, copy=False)
-
-  render_width = width * multisample_antialiasing
-  render_height = height * multisample_antialiasing
-
-  tile_split = udim.split_triangles_by_tile(triangle_uvs)
-  tiles = list(tile_split)
-  # Unweld each tile's triangles once so that each corner has its own UVs.
-  tile_corners = {
-      tile: triangles_int32[tile_triangles].ravel()
-      for tile, (tile_triangles, _) in tile_split.items()
-  }
-  tile_uvs = {
-      tile: uvs.reshape(-1, 2).astype(np.float32, copy=False)
-      for tile, (_, uvs) in tile_split.items()
-  }
-
-  prepared_textures = _prepare_tile_textures(
-      texture=texture,
-      tiles=tiles,
-      num_frames=num_frames,
-      max_texture_dimension=max(render_width, render_height),
-  )
-
-  with dr.suspend_grad():
-    sensor = _create_mitsuba_sensor(
-        world_to_camera_cv=world_to_camera[0],
-        camera_to_image_cv=camera_to_image[0],
-        width=width,
-        height=height,
-        render_width=render_width,
-        render_height=render_height,
+def _prepare_texture_bitmap(
+    texture_frame: (
+        enpt.ui8['H_texture W_texture 3']
+        | enpt.FloatArray['H_texture W_texture 3']
+    ),
+    max_texture_dim: int,
+) -> enpt.FloatArray['H_out W_out 3']:
+  """Prepares a flipped, downsampled float32 texture bitmap in [0.0, 1.0]."""
+  is_uint8 = texture_frame.dtype == np.uint8
+  texture_frame = texture_frame.astype(np.float32)
+  if is_uint8:
+    texture_frame = texture_frame / 255.0
+  texture_frame = np.clip(texture_frame, 0.0, 1.0)
+  texture_height, texture_width = texture_frame.shape[:2]
+  if texture_height > max_texture_dim or texture_width > max_texture_dim:
+    scale_factor = max_texture_dim / max(texture_height, texture_width)
+    scaled_width = max(1, int(round(texture_width * scale_factor)))
+    scaled_height = max(1, int(round(texture_height * scale_factor)))
+    texture_frame = cv2.resize(
+        texture_frame,
+        (scaled_width, scaled_height),
+        interpolation=cv2.INTER_AREA,
     )
-    sensor_parameters = mi.traverse(sensor)
-
-    scene = _create_mitsuba_scene(
-        vertices_frame=vertices[0],
-        tile_corners=tile_corners,
-        tile_uvs=tile_uvs,
-        tiles=tiles,
-        vertex_normals_frame=_index_optional(vertex_normals, 0),
-        vertex_colors_frame=_index_optional(vertex_colors, 0),
-        prepared_textures=prepared_textures,
-        world_to_camera_cv=world_to_camera[0],
-        include_shading=include_shading,
+    if texture_frame.ndim == 2:
+      texture_frame = texture_frame[..., np.newaxis]
+  texture_height, texture_width = texture_frame.shape[:2]
+  if texture_height < 2 or texture_width < 2:
+    texture_frame = np.pad(
+        texture_frame,
+        (
+            (0, max(0, 2 - texture_height)),
+            (0, max(0, 2 - texture_width)),
+            (0, 0),
+        ),
+        mode='edge',
     )
-    scene_parameters = mi.traverse(scene)
+  return mi.Bitmap(np.ascontiguousarray(texture_frame, dtype=np.float32))
 
-    composited_frames = []
-    tqdm_kwargs = {
-        'disable': not verbose,
-        'desc': 'Rendering (Mitsuba)',
-        'leave': False,
-    }
 
-    for frame in tqdm.trange(num_frames, **tqdm_kwargs):
-      if frame > 0:
-        if not (
-            np.array_equal(world_to_camera[frame], world_to_camera[frame - 1])
-            and np.array_equal(
-                camera_to_image[frame], camera_to_image[frame - 1]
-            )
-        ):
-          _update_mitsuba_sensor(
-              sensor_parameters=sensor_parameters,
-              world_to_camera_cv=world_to_camera[frame],
-              camera_to_image_cv=camera_to_image[frame],
-              width=width,
-              height=height,
-          )
-        _update_mitsuba_scene(
-            scene_parameters=scene_parameters,
-            vertices=vertices,
-            vertex_normals=vertex_normals,
-            vertex_colors=vertex_colors,
-            tile_corners=tile_corners,
-            tiles=tiles,
-            prepared_textures=prepared_textures,
-            world_to_camera=world_to_camera,
-            frame=frame,
-        )
+def _compute_sensor_parameters(
+    world_to_camera: enpt.FloatArray['4 4'],
+    camera_to_image: enpt.FloatArray['4 4'] | enpt.FloatArray['3 3'],
+    width: int,
+    height: int,
+) -> tuple[float, float, float, enpt.FloatArray['4 4']]:
+  """Computes horizontal FOV, principal point offsets, and to_world matrix."""
+  camera_to_image_cv = np.asarray(camera_to_image, dtype=np.float32)
+  world_to_camera_cv = np.asarray(world_to_camera, dtype=np.float32)
 
-      image_film = mi.render(scene, sensor=sensor, spp=4)
+  fx = float(camera_to_image_cv[0, 0])
+  fy = float(camera_to_image_cv[1, 1])
+  skew = float(camera_to_image_cv[0, 1])
+  cx = float(camera_to_image_cv[0, 2])
+  cy = float(camera_to_image_cv[1, 2])
 
-      # The background is a per-frame, per-pixel image, so it cannot be
-      # expressed as a Mitsuba emitter/envmap; compositing here also keeps the
-      # alpha blending as close as 1-to-1 with the render_gnm rasterization
-      # pipelines.
-      foreground_rgb = dr.clip(image_film[..., :3], 0.0, 1.0)
-      alpha_coverage = image_film[..., 3:4]
-      alpha_mask = alpha * dr.select(alpha_coverage > 0.0, 1.0, 0.0)
+  f_max = max(abs(fx), abs(fy), 1e-6)
+  if abs(fx - fy) / f_max > 1e-4 or abs(skew) / f_max > 1e-4:
+    raise NotImplementedError(
+        'Mitsuba sensor only supports square pixels (fx == fy) and zero skew, '
+        f'got fx={fx}, fy={fy}, skew={skew}.'
+    )
 
-      if background_color is not None:
-        background_rgb = mi.TensorXf(background_color[frame])
-        if multisample_antialiasing > 1:
-          background_rgb = dr.resample(
-              background_rgb,
-              shape=(render_height, render_width, 3),
-              filter='box',
-          )
-      else:
-        background_rgb = dr.zeros(mi.TensorXf, foreground_rgb.shape)
+  focal_length = (fx + fy) / 2.0
+  fov_x = float(np.rad2deg(2.0 * np.arctan(width / (2.0 * focal_length))))
+  offset_x = float(0.5 - cx / width)
+  offset_y = float(0.5 - cy / height)
 
-      composited_rgb = foreground_rgb * alpha_mask + background_rgb * (
-          1.0 - alpha_mask
-      )
+  if world_to_camera_cv.shape == (3, 4):
+    row = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=world_to_camera_cv.dtype)
+    world_to_camera_cv = np.concatenate([world_to_camera_cv, row], axis=0)
 
-      if multisample_antialiasing > 1:
-        composited_rgb = dr.resample(
-            composited_rgb, shape=(height, width, 3), filter='box'
-        )
+  c2w_cv = np.linalg.inv(world_to_camera_cv)
+  coord_transform = np.diag([-1.0, -1.0, 1.0, 1.0]).astype(np.float32)
+  to_world_mitsuba = np.asarray(c2w_cv @ coord_transform, dtype=np.float32)
 
-      composited_frames.append(np.array(composited_rgb))
-      del image_film, composited_rgb
-
-    del scene, scene_parameters, sensor, sensor_parameters
-    dr.flush_malloc_cache()
-  return np.array(composited_frames, dtype=np.float32)
+  return fov_x, offset_x, offset_y, to_world_mitsuba

@@ -14,9 +14,13 @@
 
 """Tests for rendering GNM meshes using the Mitsuba backend."""
 
+from unittest import mock
+
 from absl.testing import absltest
+from gnm.shape.visualization import render_common
 from gnm.shape.visualization import render_gnm_mitsuba
 from gnm.shape.visualization import render_gnm_test_base
+import numpy as np
 
 
 class RenderGNMMitsubaTest(render_gnm_test_base.RenderGNMTestBase):
@@ -25,12 +29,56 @@ class RenderGNMMitsubaTest(render_gnm_test_base.RenderGNMTestBase):
   render_fn = staticmethod(render_gnm_mitsuba.render_gnm)
   test_all_versions = False
 
+  def test_renderer_class_exposed_and_renders(self):
+    """Tests that GNMMeshRenderer and MeshRenderOutput render template mesh."""
+    self.assertIs(
+        render_gnm_mitsuba.GNMMeshRenderer,
+        render_gnm_mitsuba.gnm_mitsuba.GNMMeshRenderer,
+    )
+    renderer = render_gnm_mitsuba.GNMMeshRenderer.from_gnm(self.gnm_np, spp=1)
+    vertices, world_to_camera, camera_to_image = (
+        render_common.resolve_gnm_camera_and_vertices(
+            self.gnm_np, image_size=(32, 32)
+        )
+    )
+    render_output = renderer.render(
+        vertices=vertices,
+        world_to_camera=world_to_camera,
+        camera_to_image=camera_to_image,
+        image_size=(32, 32),
+    )
+    self.assertIsInstance(render_output, render_gnm_mitsuba.MeshRenderOutput)
+    self.assertEqual(render_output.image.shape, (32, 32, 3))
+    self.assertEqual(render_output.alpha.shape, (32, 32, 1))
+    renderer.close()
+
 
 class RenderGNMBatchTest(render_gnm_test_base.RenderGNMBatchTestBase):
   """Tests batching of arguments to render_gnm_mitsuba."""
 
   render_fn = staticmethod(render_gnm_mitsuba.render_gnm)
-  mock_target = 'gnm.shape.visualization.gnm_mitsuba.render'
+  mock_target = (
+      'gnm.shape.visualization.gnm_mitsuba.GNMMeshRenderer._render_single_frame'
+  )
+
+  def setUp(self):
+    super().setUp()
+    self.enter_context(
+        mock.patch.object(
+            render_gnm_mitsuba.GNMMeshRenderer, 'update_camera', autospec=True
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            render_gnm_mitsuba.GNMMeshRenderer,
+            'update_vertices',
+            autospec=True,
+        )
+    )
+    self.mock_render.side_effect = lambda _self, width, height: (
+        np.zeros((height, width, 3), dtype=np.float32),
+        np.zeros((height, width, 1), dtype=np.float32),
+    )
 
 
 if __name__ == '__main__':
