@@ -39,64 +39,20 @@ gnm/shape/
 │   └── versions/           # Model specifications and catalog definitions
 ├── demos/                  # Interactive demo notebooks (.ipynb)
 ├── fitting_utils/          # Shared optimization helper functions
+├── oss_data_loaders/       # Remote CDN model download and caching utilities
 ├── visualization/          # Rendering and camera projection utilities
 ├── gnm_base.py             # Base GNM class definitions
-├── gnm_colab_viewer.py     # Colab 3D face model visualization tool
 ├── gnm_data_loader.py      # Dynamic model loaders and checkers
 ├── gnm_data_schema.py      # Input/output data validation schemas
 ├── gnm_jax.py              # JAX implementation of GNM
+├── gnm_jupyter_viewer.py   # Interactive Jupyter 3D mesh viewer
+├── gnm_landmarks.py        # Sparse landmark utilities
 ├── gnm_numpy.py            # NumPy implementation of GNM (primary)
 ├── gnm_pytorch.py          # PyTorch implementation of GNM
 ├── gnm_tensorflow.py       # TensorFlow implementation of GNM
-├── pyproject.toml          # Package build & optional dependency configuration
+├── gnm_udim.py             # UDIM tile definitions and region mappings
 └── semantic_sampler.py     # Semantic parameter sampling (identities/expressions)
 ```
-
-## Installation
-
-### 1. Prerequisites
-GNM Shape is tested with **Python 3.13**. Before installing, create and activate
-a clean virtual environment using your preferred tool
-(e.g. mamba/conda, venv, uv etc.):
-
-```bash
-mamba create -n gnm python=3.13
-mamba activate gnm
-```
-
-
-### 2. Install GNM Shape
-Clone the repository and install the package using `pip` into your active
-environment. You can install only the backend frameworks you need:
-
-```bash
-git clone https://github.com/google/gnm.git
-cd gnm/gnm/shape
-```
-
-*   **Core (NumPy + TensorFlow only):**
-
-    ```bash
-    pip install -e .
-    ```
-
-*   **With JAX support:**
-
-    ```bash
-    pip install -e ".[jax]"
-    ```
-
-*   **With PyTorch support:**
-
-    ```bash
-    pip install -e ".[pytorch]"
-    ```
-
-*   **All supported frameworks and development tools:**
-
-    ```bash
-    pip install -e ".[all,dev]"
-    ```
 
 ## Getting Started
 
