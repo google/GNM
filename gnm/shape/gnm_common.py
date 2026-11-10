@@ -14,22 +14,21 @@
 
 """Backend-agnostic core math functions of the GNM model using etils.enp."""
 
+from collections.abc import Sequence
 import math
-from typing import Any, Sequence
+from typing import Any
 from etils import enp
-from gnm.shape import gnm_typing
-
-enpt = gnm_typing.enpt
+import jaxtyping as jt
 
 _EPSILON = 1e-8
 
 
-def take(
-    array: enpt.FloatArray['...'],
-    indices: enpt.IntArray['...'],
+def take[ArrayT: Any](
+    array: jt.Num[ArrayT, '...'],
+    indices: jt.Int[ArrayT, '...'],
     axis: int = 0,
     xnp: Any = None,
-) -> enpt.FloatArray['...']:
+) -> jt.Num[ArrayT, '...']:
   """Extracts elements from an array along a specified axis.
 
   This is a backend-agnostic wrapper around backend specific operations.
@@ -62,12 +61,12 @@ def take(
     return xnp.take(array, indices, axis=axis)
 
 
-def eye(
+def eye[ArrayT: Any](
     size: int,
     dtype: Any,
-    reference_array: enpt.FloatArray['...'],
+    reference_array: jt.Float[ArrayT, '...'],
     xnp: Any = None,
-) -> enpt.FloatArray['...']:
+) -> jt.Float[ArrayT, 'size size']:
   """Creates a 2D identity matrix.
 
   Args:
@@ -91,12 +90,12 @@ def eye(
     return xnp.eye(size, dtype=dtype)
 
 
-def reshape_with_batch_dims(
-    array: enpt.FloatArray['...'],
+def reshape_with_batch_dims[ArrayT: Any](
+    array: jt.Float[ArrayT, '...'],
     target_suffix: tuple[int, ...],
-    reference_array: enpt.FloatArray['...'],
+    reference_array: jt.Float[ArrayT, '...'],
     num_reference_non_batch_dims: int,
-) -> enpt.FloatArray['...']:
+) -> jt.Float[ArrayT, '...']:
   """Reshapes an array by prepending the batch shape of a reference array.
 
   This function extracts the batch dimensions of `reference_array` (all but the
@@ -127,12 +126,12 @@ def reshape_with_batch_dims(
   return xnp.reshape(array, output_shape)
 
 
-def zeros_with_batch_dims(
-    reference_array: enpt.FloatArray['...'],
+def zeros_with_batch_dims[ArrayT: Any](
+    reference_array: jt.Float[ArrayT, '...'],
     num_reference_non_batch_dims: int,
     suffix_shape: tuple[int, ...],
     dtype: Any,
-) -> enpt.FloatArray['...']:
+) -> jt.Float[ArrayT, '...']:
   """Creates a zeros array with the batch shape of a reference array.
 
   This function extracts the batch dimensions of `reference_array` (all but the
@@ -168,10 +167,10 @@ def zeros_with_batch_dims(
   return xnp.zeros(full_shape, **array_kwargs)
 
 
-def axis_angle_to_rotation_matrix(
-    axis_angle: enpt.FloatArray['... 3'],
+def axis_angle_to_rotation_matrix[ArrayT: Any](
+    axis_angle: jt.Float[ArrayT, '... 3'],
     epsilon: float = _EPSILON,
-) -> enpt.FloatArray['... 3 3']:
+) -> jt.Float[ArrayT, '... 3 3']:
   """Builds a 3x3 rotation matrix from an axis-angle vector.
 
   Uses Rodrigues' rotation formula:
@@ -234,10 +233,10 @@ def axis_angle_to_rotation_matrix(
   return matrix
 
 
-def rotation_matrix_to_axis_angles(
-    rotation_matrix: enpt.FloatArray['... 3 3'],
+def rotation_matrix_to_axis_angles[ArrayT: Any](
+    rotation_matrix: jt.Float[ArrayT, '... 3 3'],
     epsilon: float = _EPSILON,
-) -> enpt.FloatArray['... 3']:
+) -> jt.Float[ArrayT, '... 3']:
   """Converts a batch of 3x3 rotation matrices into axis-angle vectors.
 
   Uses a numerically stable conversion through quaternions to avoid
@@ -316,12 +315,12 @@ def rotation_matrix_to_axis_angles(
   return 2.0 * scale * q_xyz
 
 
-def joint_transforms_world_from_rotation_matrices(
-    joints: enpt.FloatArray['... J 3'],
-    rotation_matrices: enpt.FloatArray['... J 3 3'],
-    translation: enpt.FloatArray['... 3'],
+def joint_transforms_world_from_rotation_matrices[ArrayT: Any](
+    joints: jt.Float[ArrayT, '... J 3'],
+    rotation_matrices: jt.Float[ArrayT, '... J 3 3'],
+    translation: jt.Float[ArrayT, '... 3'],
     joint_parent_indices: Sequence[int],
-) -> enpt.FloatArray['... J 4 4']:
+) -> jt.Float[ArrayT, '... J 4 4']:
   """Computes world-space joint transforms from rotation matrices.
 
   This function traverses the joint hierarchy and applies forward kinematics
@@ -393,12 +392,12 @@ def joint_transforms_world_from_rotation_matrices(
   return xnp.stack(world_transforms_list, axis=-3)
 
 
-def joint_transforms_world(
-    joints: enpt.FloatArray['... J 3'],
-    rotations: enpt.FloatArray['... J 3'],
-    translation: enpt.FloatArray['... 3'],
+def joint_transforms_world[ArrayT: Any](
+    joints: jt.Float[ArrayT, '... J 3'],
+    rotations: jt.Float[ArrayT, '... J 3'],
+    translation: jt.Float[ArrayT, '... 3'],
     joint_parent_indices: Sequence[int],
-) -> enpt.FloatArray['... J 4 4']:
+) -> jt.Float[ArrayT, '... J 4 4']:
   """Computes the world-space transformation matrices for each joint.
 
   This function traverses the joint hierarchy and applies forward kinematics
@@ -426,13 +425,13 @@ def joint_transforms_world(
   )
 
 
-def apply_linear_blend_skinning_with_transforms(
-    local_vertices: enpt.FloatArray['... V 3'],
-    joint_positions: enpt.FloatArray['... J 3'],
-    joint_transforms_world_local: enpt.FloatArray['... J 4 4'],
-    skinning_weights: enpt.FloatArray['J V'],
+def apply_linear_blend_skinning_with_transforms[ArrayT: Any](
+    local_vertices: jt.Float[ArrayT, '... V 3'],
+    joint_positions: jt.Float[ArrayT, '... J 3'],
+    joint_transforms_world_local: jt.Float[ArrayT, '... J 4 4'],
+    skinning_weights: jt.Float[ArrayT, 'J V'],
     xnp: enp.NpModule | None = None,
-) -> enpt.FloatArray['... V 3']:
+) -> jt.Float[ArrayT, '... V 3']:
   """Applies Linear Blend Skinning using precomputed world joint transforms.
 
   Args:
@@ -475,14 +474,14 @@ def apply_linear_blend_skinning_with_transforms(
   return vertices_skinned
 
 
-def linear_blend_skinning_from_rotation_matrices(
-    local_vertices: enpt.FloatArray['... V 3'],
-    joint_positions: enpt.FloatArray['... J 3'],
-    rotation_matrices: enpt.FloatArray['... J 3 3'],
-    translation: enpt.FloatArray['... 3'],
-    skinning_weights: enpt.FloatArray['J V'],
+def linear_blend_skinning_from_rotation_matrices[ArrayT: Any](
+    local_vertices: jt.Float[ArrayT, '... V 3'],
+    joint_positions: jt.Float[ArrayT, '... J 3'],
+    rotation_matrices: jt.Float[ArrayT, '... J 3 3'],
+    translation: jt.Float[ArrayT, '... 3'],
+    skinning_weights: jt.Float[ArrayT, 'J V'],
     joint_parent_indices: Sequence[int],
-) -> enpt.FloatArray['... V 3']:
+) -> jt.Float[ArrayT, '... V 3']:
   """Poses GNM vertices using Linear Blend Skinning from rotation matrices.
 
   Linear Blend Skinning computes posed vertex positions by taking a weighted
@@ -518,14 +517,14 @@ def linear_blend_skinning_from_rotation_matrices(
   )
 
 
-def linear_blend_skinning(
-    local_vertices: enpt.FloatArray['... V 3'],
-    joint_positions: enpt.FloatArray['... J 3'],
-    rotations: enpt.FloatArray['... J 3'],
-    translation: enpt.FloatArray['... 3'],
-    skinning_weights: enpt.FloatArray['J V'],
+def linear_blend_skinning[ArrayT: Any](
+    local_vertices: jt.Float[ArrayT, '... V 3'],
+    joint_positions: jt.Float[ArrayT, '... J 3'],
+    rotations: jt.Float[ArrayT, '... J 3'],
+    translation: jt.Float[ArrayT, '... 3'],
+    skinning_weights: jt.Float[ArrayT, 'J V'],
     joint_parent_indices: Sequence[int],
-) -> enpt.FloatArray['... V 3']:
+) -> jt.Float[ArrayT, '... V 3']:
   """Poses the GNM vertices using Linear Blend Skinning (LBS).
 
   Linear Blend Skinning computes posed vertex positions by taking a weighted
@@ -556,13 +555,13 @@ def linear_blend_skinning(
   )
 
 
-def vertex_positions_bind_pose(
-    identity: enpt.FloatArray['... I'] | None,
-    expression: enpt.FloatArray['... E'] | None,
-    template_vertex_positions: enpt.FloatArray['V 3'],
-    vertex_identity_basis: enpt.FloatArray['I V 3'],
-    expression_basis: enpt.FloatArray['E V 3'],
-) -> enpt.FloatArray['... V 3']:
+def vertex_positions_bind_pose[ArrayT: Any](
+    identity: jt.Float[ArrayT, '... I'] | None,
+    expression: jt.Float[ArrayT, '... E'] | None,
+    template_vertex_positions: jt.Float[ArrayT, 'V 3'],
+    vertex_identity_basis: jt.Float[ArrayT, 'I V 3'],
+    expression_basis: jt.Float[ArrayT, 'E V 3'],
+) -> jt.Float[ArrayT, '... V 3']:
   """Computes vertices in the bind pose, with identity and expression applied.
 
   This function computes the neutral shape of the model by applying the identity
@@ -599,11 +598,11 @@ def vertex_positions_bind_pose(
   return template_vertex_positions + identity_deltas + expression_deltas
 
 
-def joint_positions_bind_pose(
-    identity: enpt.FloatArray['... I'] | None,
-    template_joint_positions: enpt.FloatArray['J 3'],
-    joint_identity_basis: enpt.FloatArray['I J 3'],
-) -> enpt.FloatArray['... J 3']:
+def joint_positions_bind_pose[ArrayT: Any](
+    identity: jt.Float[ArrayT, '... I'] | None,
+    template_joint_positions: jt.Float[ArrayT, 'J 3'],
+    joint_identity_basis: jt.Float[ArrayT, 'I J 3'],
+) -> jt.Float[ArrayT, '... J 3']:
   """Joint positions in the bind pose, with identity basis applied.
 
   Computes joint locations in the bind pose by applying the identity shape
@@ -629,13 +628,13 @@ def joint_positions_bind_pose(
   return template_joint_positions + deltas
 
 
-def compute_pose_correctives_from_rotation_matrices(
-    rotation_matrices: enpt.FloatArray['... J 3 3'] | None,
-    pose_correctives_regressor: enpt.FloatArray['F F2'] | None,
-    template_vertex_positions: enpt.FloatArray['V 3'],
+def compute_pose_correctives_from_rotation_matrices[ArrayT: Any](
+    rotation_matrices: jt.Float[ArrayT, '... J 3 3'] | None,
+    pose_correctives_regressor: jt.Float[ArrayT, 'F F2'] | None,
+    template_vertex_positions: jt.Float[ArrayT, 'V 3'],
     num_joints: int,
     num_vertices: int,
-) -> enpt.FloatArray['... V 3']:
+) -> jt.Float[ArrayT, '... V 3']:
   """Applies pose-dependent corrective vertex offsets from rotation matrices.
 
   Pose correctives modify the mesh vertices based on joint rotation matrices to
@@ -690,13 +689,13 @@ def compute_pose_correctives_from_rotation_matrices(
   )
 
 
-def compute_pose_correctives(
-    rotations: enpt.FloatArray['... J 3'] | None,
-    pose_correctives_regressor: enpt.FloatArray['F F2'] | None,
-    template_vertex_positions: enpt.FloatArray['V 3'],
+def compute_pose_correctives[ArrayT: Any](
+    rotations: jt.Float[ArrayT, '... J 3'] | None,
+    pose_correctives_regressor: jt.Float[ArrayT, 'F F2'] | None,
+    template_vertex_positions: jt.Float[ArrayT, 'V 3'],
     num_joints: int,
     num_vertices: int,
-) -> enpt.FloatArray['... V 3']:
+) -> jt.Float[ArrayT, '... V 3']:
   """Applies pose-dependent corrective shape offsets to vertices.
 
   Pose correctives modify the mesh vertices based on joint rotation angles to
@@ -728,8 +727,8 @@ def compute_pose_correctives(
   )
 
 
-def _graph_shape(
-    array: enpt.FloatArray['...'],
+def _graph_shape[ArrayT: Any](
+    array: jt.Float[ArrayT, '...'],
 ) -> tuple[int, ...]:
   """Returns the shape of an array, supporting graph-mode arrays."""
   if enp.lazy.is_tf(array):
@@ -745,8 +744,8 @@ def _einsum_kwargs(xnp: enp.NpModule) -> dict[str, Any]:
   return dict()
 
 
-def _is_constant_batch(
-    array: enpt.FloatArray['...'], xnp: enp.NpModule
+def _is_constant_batch[ArrayT: Any](
+    array: jt.Float[ArrayT, '...'], xnp: enp.NpModule
 ) -> bool:
   """Checks if array is constant across its batch dimension(s)."""
   batch_size = int(math.prod(array.shape[:-1]))
@@ -765,11 +764,11 @@ def _is_constant_batch(
   return bool(xnp.all(flattened_batch == first_frame))
 
 
-def _apply_linear_basis(
-    params: enpt.FloatArray['... I'],
-    basis: enpt.FloatArray['I ...'],
+def _apply_linear_basis[ArrayT: Any](
+    params: jt.Float[ArrayT, '... I'],
+    basis: jt.Float[ArrayT, 'I ...'],
     xnp: enp.NpModule,
-) -> enpt.FloatArray['...']:
+) -> jt.Float[ArrayT, '...']:
   """Applies a linear basis, optimizing constant batches via broadcasting."""
   batch_dims = params.shape[:-1]
 
