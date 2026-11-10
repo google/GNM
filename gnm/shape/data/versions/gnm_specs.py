@@ -12,28 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GNM versions and variants specifications."""
+"""Transitional re-export shim for GNM specifications."""
 
-import enum
+from gnm import gnm_specs as _top_gnm_specs
+from gnm.shape.data.versions import gnm_shape_specs as _gnm_shape_specs
 
-
-class GNMVersion(enum.StrEnum):
-  V3_0 = '3.0'
-
-class GNMMajorVersion(enum.StrEnum):
-  V3 = '3'
-
-class GNMVariant(enum.StrEnum):
-  HEAD = 'head'
-
-class GNMBodyPart(enum.StrEnum):
-  HEAD = 'head'
-
-GNM_VARIANT_TO_BODY_PART_MAP = {
-  GNMVariant.HEAD: GNMBodyPart.HEAD,
-}
-
-class GNMRemoteSource(enum.StrEnum):
-  HTTP = 'http'
-  HUGGING_FACE = 'huggingface'
-  KAGGLE = 'kaggle'
+# pylint: disable=invalid-name
+GNMVersion = _top_gnm_specs.GNMVersion
+GNMMajorVersion = _top_gnm_specs.GNMMajorVersion
+GNMVariant = _top_gnm_specs.GNMVariant
+GNMBodyPart = _top_gnm_specs.GNMBodyPart
+GNM_VARIANT_TO_BODY_PART_MAP = _top_gnm_specs.GNM_VARIANT_TO_BODY_PART_MAP
+GNMRemoteSource = _gnm_shape_specs.GNMRemoteSource
+# pylint: enable=invalid-name
