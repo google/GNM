@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from etils import epath
 from gnm.shape.data.versions import gnm_test_catalog
+from gnm.shape.visualization import render_common
 from gnm.shape.visualization import render_gnm
 from gnm.shape.visualization import render_gnm_mitsuba
 from gnm.shape.visualization import render_gnm_test_base
@@ -78,6 +79,68 @@ class RenderGNMParityTest(parameterized.TestCase):
     }
     image_pyrender = render_gnm.render_gnm(**kwargs)
     image_mitsuba = render_gnm_mitsuba.render_gnm(**kwargs)
+    diff = np.linalg.norm(image_pyrender - image_mitsuba, axis=-1)
+    with self.subTest('Average pixels are close.'):
+      self.assertLess(np.mean(diff), 0.01)
+    with self.subTest('Few pixels are very different.'):
+      self.assertGreater(np.mean(diff < 0.05), 0.99)
+
+  @parameterized.parameters((0.0,), (0.3,), (1.0,))
+  def test_parity_ambient_light(self, ambient_light: float):
+    """Tests rendering parity with ambient_light."""
+    kwargs = {
+        'gnm_np': self.gnm_np,
+        'vertices': self.vertices,
+        'include_shading': True,
+        'ambient_light': ambient_light,
+        'backface_culling': True,
+        'texture': None,
+        'image_size': self.image_size,
+    }
+    image_pyrender = render_gnm.render_gnm(**kwargs)
+    image_mitsuba = render_gnm_mitsuba.render_gnm(**kwargs)
+    images = np.hstack([image_pyrender, image_mitsuba])
+    render_gnm_test_base.write_images(
+        self.outputs_dir, f'parity_ambient_light_{ambient_light:.1f}', images
+    )
+
+    diff = np.linalg.norm(image_pyrender - image_mitsuba, axis=-1)
+    with self.subTest('Average pixels are close.'):
+      self.assertLess(np.mean(diff), 0.01)
+    with self.subTest('Few pixels are very different.'):
+      self.assertGreater(np.mean(diff < 0.05), 0.99)
+
+  def test_parity_backface_culling_disabled(self):
+    """Tests rendering parity on back-facing triangles when culling is off."""
+    back_world_to_camera = render_common.get_look_at_world_to_camera(
+        self.gnm_np,
+        self.vertices,
+        azimuthal_angle=140.0,
+    )
+    base_kwargs = {
+        'gnm_np': self.gnm_np,
+        'vertices': self.vertices,
+        'triangles': 'hockey_mask',
+        'world_to_camera': back_world_to_camera,
+        'include_shading': True,
+        'ambient_light': 0.2,
+        'texture': None,
+        'image_size': self.image_size,
+    }
+    image_culled = render_gnm.render_gnm(**base_kwargs, backface_culling=True)
+    image_pyrender = render_gnm.render_gnm(
+        **base_kwargs, backface_culling=False
+    )
+    image_mitsuba = render_gnm_mitsuba.render_gnm(
+        **base_kwargs, backface_culling=False
+    )
+    self.assertGreater(np.mean(np.abs(image_pyrender - image_culled)), 0.05)
+
+    images = np.hstack([image_culled, image_pyrender, image_mitsuba])
+    render_gnm_test_base.write_images(
+        self.outputs_dir, 'parity_backface_culling_disabled', images
+    )
+
     diff = np.linalg.norm(image_pyrender - image_mitsuba, axis=-1)
     with self.subTest('Average pixels are close.'):
       self.assertLess(np.mean(diff), 0.01)

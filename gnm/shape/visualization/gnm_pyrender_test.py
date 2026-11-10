@@ -412,6 +412,67 @@ class GNMMeshRendererTest(parameterized.TestCase):
     self.assertEqual(composited_custom.dtype, np.uint8)
     renderer.close()
 
+  def test_ambient_light(self):
+    with gnm_pyrender.GNMMeshRenderer.from_gnm(
+        self.gnm_np, texture=None
+    ) as default_renderer:
+      default_output = default_renderer.render(
+          self.vertices,
+          self.world_to_camera,
+          self.camera_to_image,
+          image_size=self.image_size,
+      )
+    with gnm_pyrender.GNMMeshRenderer.from_gnm(
+        self.gnm_np, texture=None, ambient_light=0.5
+    ) as ambient_renderer:
+      ambient_output = ambient_renderer.render(
+          self.vertices,
+          self.world_to_camera,
+          self.camera_to_image,
+          image_size=self.image_size,
+      )
+
+    foreground = default_output.alpha[..., 0] > 0.0
+    self.assertEqual(default_renderer.ambient_light, 0.0)
+    self.assertEqual(ambient_renderer.ambient_light, 0.5)
+    self.assertGreater(
+        np.mean(ambient_output.image[foreground]),
+        np.mean(default_output.image[foreground]),
+    )
+
+  def test_backface_culling(self):
+    back_world_to_camera = render_common.get_look_at_world_to_camera(
+        self.gnm_np, self.vertices, azimuthal_angle=180.0
+    )
+    with gnm_pyrender.GNMMeshRenderer.from_gnm(
+        self.gnm_np, triangles='hockey_mask', texture=None
+    ) as culled_renderer:
+      culled_output = culled_renderer.render(
+          self.vertices,
+          back_world_to_camera,
+          self.camera_to_image,
+          image_size=self.image_size,
+      )
+    with gnm_pyrender.GNMMeshRenderer.from_gnm(
+        self.gnm_np,
+        triangles='hockey_mask',
+        texture=None,
+        backface_culling=False,
+    ) as double_sided_renderer:
+      double_sided_output = double_sided_renderer.render(
+          self.vertices,
+          back_world_to_camera,
+          self.camera_to_image,
+          image_size=self.image_size,
+      )
+
+    self.assertTrue(culled_renderer.backface_culling)
+    self.assertFalse(double_sided_renderer.backface_culling)
+    self.assertGreater(
+        np.mean(double_sided_output.alpha), np.mean(culled_output.alpha) + 0.1
+    )
+    self.assertGreater(np.max(double_sided_output.image), 100)
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -82,12 +82,16 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
   (`gnm_pyrender_swiftshader.create_swiftshader_renderer`) backends.
 
   Attributes:
+    ambient_light: Ambient light floor in [0, 1]. Defaults to 0.0.
+    backface_culling: Whether to cull back-facing triangles. Defaults to True.
     renderer_factory: Factory callable `(viewport_width, viewport_height) ->
       pyrender.OffscreenRenderer`.
   """
 
   _progress_bar_desc: ClassVar[str] = 'Rendering (PyRender)'
 
+  ambient_light: float = 0.0
+  backface_culling: bool = True
   renderer_factory: Callable[[int, int], pyrender.OffscreenRenderer] = (
       DEFAULT_RENDERER_FACTORY
   )
@@ -105,6 +109,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
       multisample_antialiasing: int = 1,
       vertex_colors: enpt.FloatArray['... V 3'] | None = None,
       include_shading: bool = True,
+      ambient_light: float = 0.0,
+      backface_culling: bool = True,
       verbose: bool = False,
       renderer_factory: Callable[
           [int, int], pyrender.OffscreenRenderer
@@ -125,6 +131,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         Defaults to standard GNM per-component vertex colors.
       include_shading: Whether to include directional lighting/shading. Defaults
         to True.
+      ambient_light: Ambient light floor in [0, 1]. Defaults to 0.0.
+      backface_culling: Whether to cull back-facing triangles. Defaults to True.
       verbose: Default flag controlling whether to display a progress bar.
       renderer_factory: Factory callable `(viewport_width, viewport_height) ->
         pyrender.OffscreenRenderer`.
@@ -141,6 +149,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         include_shading=include_shading,
         verbose=verbose,
     )
+    renderer.ambient_light = ambient_light
+    renderer.backface_culling = backface_culling
     renderer.renderer_factory = renderer_factory
     return renderer
 
@@ -346,6 +356,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         if self.include_shading
         else pyrender.constants.RenderFlags.FLAT
     )
+    if not self.backface_culling:
+      flags |= pyrender.constants.RenderFlags.SKIP_CULL_FACES
     color_srgb, depth = self._renderer.render(self._scene, flags=flags)
     foreground_rgb = np.clip(color_srgb.astype(np.float32) / 255.0, 0.0, 1.0)
     foreground_rgb = np.power(foreground_rgb, 2.2)
@@ -380,7 +392,9 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
     """Initializes PyRender scene, camera node, and light if needed."""
     if self._scene is not None:
       return
-    scene = pyrender.Scene(bg_color=_BLACK)
+    scene = pyrender.Scene(
+        bg_color=_BLACK, ambient_light=np.full(3, self.ambient_light)
+    )
     camera = ProjectionMatrixCamera(np.eye(4, dtype=np.float32))
     camera_node = scene.add(camera, pose=np.eye(4, dtype=np.float32))
     light_direction_camera = _LIGHT_DIRECTION / np.linalg.norm(_LIGHT_DIRECTION)
@@ -388,7 +402,8 @@ class GNMMeshRenderer(render_common.BaseGNMMeshRenderer):
         np.array([0.0, 0.0, 1.0]), light_direction_camera
     )
     light = pyrender.DirectionalLight(
-        color=np.ones(3), intensity=_LIGHT_INTENSITY
+        color=np.ones(3),
+        intensity=_LIGHT_INTENSITY * (1.0 - self.ambient_light),
     )
     scene.add(light, pose=light_pose_camera, parent_node=camera_node)
     self._scene = scene
@@ -468,6 +483,8 @@ def render(
     background_color: npt.NDArray[np.floating] | None = None,
     alpha: float = 1.0,
     include_shading: bool = True,
+    ambient_light: float = 0.0,
+    backface_culling: bool = True,
     verbose: bool = False,
     renderer_factory: Callable[
         [int, int], pyrender.OffscreenRenderer
@@ -495,6 +512,8 @@ def render(
     alpha: A float [0-1] to be multiplied by the render-alpha to determine
       blending with the background color.
     include_shading: If False, disable shading in render.
+    ambient_light: Ambient light floor in [0, 1].
+    backface_culling: Whether to cull back-facing triangles.
     verbose: Whether to print progress bars.
     renderer_factory: Optional factory function returning a
       pyrender.OffscreenRenderer.
@@ -510,6 +529,8 @@ def render(
       texture=texture,
       multisample_antialiasing=multisample_antialiasing,
       include_shading=include_shading,
+      ambient_light=ambient_light,
+      backface_culling=backface_culling,
       verbose=verbose,
       renderer_factory=renderer_factory,
       _cameras_in_opengl=True,
@@ -544,7 +565,8 @@ def _custom_fragment_file(fragment_shader: str) -> str:
     if line.strip().startswith('float nl = clamp'):
       mesh_frag_shader[i] = line.replace(
           'clamp(dot(n, l), 0.001, 1.0)',
-          'clamp((dot(n, l) + 0.8) / 1.8, 0.0, 1.0)',
+          'clamp(((dot(n, v) < 0.0 ? -dot(n, l) : dot(n, l)) + 0.8) / 1.8, 0.0,'
+          ' 1.0)',
       )
       break
   else:

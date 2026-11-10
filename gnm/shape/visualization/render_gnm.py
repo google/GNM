@@ -43,6 +43,8 @@ def render_gnm(
     vertex_colors: npt.NDArray[np.floating] | None = None,
     multiple_gnms: bool = False,
     include_shading: bool = True,
+    ambient_light: float = 0.0,
+    backface_culling: bool = True,
     verbose: bool = False,
     renderer_factory: Callable[..., Any] = (
         gnm_pyrender.DEFAULT_RENDERER_FACTORY
@@ -111,6 +113,8 @@ def render_gnm(
       first GNM in the sequence.
     include_shading: Whether to include shading. If False, the mesh will be
       rendered without light or shading.
+    ambient_light: Ambient light floor in [0, 1].
+    backface_culling: Whether to cull back-facing triangles.
     verbose: Whether to print progress bars.
     renderer_factory: Optional factory function returning a
       pyrender.OffscreenRenderer.
@@ -139,6 +143,8 @@ def render_gnm(
       multisample_antialiasing=multisample_antialiasing,
       vertex_colors=vertex_colors,
       include_shading=include_shading,
+      ambient_light=ambient_light,
+      backface_culling=backface_culling,
       verbose=verbose,
       renderer_factory=renderer_factory,
   ) as renderer:
