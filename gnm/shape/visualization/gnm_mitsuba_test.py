@@ -320,6 +320,36 @@ class GNMMitsubaTest(parameterized.TestCase):
           image_size=(240, 320),
       )
 
+  def test_render_reuses_sensor_of_image_size(self):
+    """Tests that a reused sensor renders like a newly created one."""
+    self.enter_context(mock.patch.dict(gnm_mitsuba._SENSORS, clear=True))
+    gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
+    vertices = gnm_np.template_vertex_positions[np.newaxis, np.newaxis]
+    moved_world_to_camera = self.world_to_camera.copy()
+    moved_world_to_camera[0, 3] = 0.05
+
+    def render_frame(
+        world_to_camera: npt.NDArray[np.float32],
+    ) -> npt.NDArray[np.float32]:
+      return gnm_mitsuba.render(
+          vertices=vertices,
+          triangles=gnm_np.triangles,
+          world_to_camera=world_to_camera[np.newaxis],
+          camera_to_image=self.camera_to_image[np.newaxis],
+          vertex_normals=gnm_np.compute_vertex_normals(vertices),
+          triangle_uvs=gnm_np.triangle_uvs_udim,
+          vertex_colors=np.ones_like(vertices),
+          image_size=(240, 320),
+      )
+
+    render_frame(self.world_to_camera)
+    reused = render_frame(moved_world_to_camera)
+    self.assertLen(gnm_mitsuba._SENSORS, 1)
+    self.assertGreater(float(reused.max()), 0.0)
+    gnm_mitsuba._SENSORS.clear()
+    created = render_frame(moved_world_to_camera)
+    np.testing.assert_allclose(reused, created, rtol=1e-5, atol=1e-5)
+
   def test_render_suspends_gradients(self):
     """Tests that mesh creation and rendering suspend gradient tracking."""
     gnm_np = self.gnms[_MAINTAINED_MAJOR_GNM_VERSIONS[0]]
@@ -408,6 +438,7 @@ class GNMMeshRendererTest(parameterized.TestCase):
 
   def test_mock_scene_reuse_across_frames(self):
     """Tests that scene and sensor are reused across multiple frames."""
+    self.enter_context(mock.patch.dict(gnm_mitsuba._SENSORS, clear=True))
     renderer = gnm_mitsuba.GNMMeshRenderer.from_gnm(self.gnm_np, spp=1)
     mock_loaded = mock.MagicMock()
     mock_loaded.integrator.return_value = None
@@ -470,6 +501,7 @@ class GNMMeshRendererTest(parameterized.TestCase):
 
   def test_update_camera_in_place_and_reload_on_resize(self):
     """Tests that update_camera updates in-place or reloads on size change."""
+    self.enter_context(mock.patch.dict(gnm_mitsuba._SENSORS, clear=True))
     renderer = gnm_mitsuba.GNMMeshRenderer.from_gnm(self.gnm_np, spp=1)
     # Initial camera load at 64x64
     renderer.update_camera(
@@ -501,6 +533,16 @@ class GNMMeshRendererTest(parameterized.TestCase):
     self.assertIsNot(renderer._sensor, initial_sensor)
     self.assertIsNone(renderer._sensor_params)
     self.assertEqual(renderer._cached_image_size, (32, 32))
+
+    # Resizing back to 64x64 reuses the shared 64x64 sensor.
+    renderer.update_camera(
+        world_to_camera=self.world_to_camera,
+        camera_to_image=self.camera_to_image,
+        image_size=(64, 64),
+    )
+    self.assertIs(renderer._sensor, initial_sensor)
+    self.assertIsNotNone(renderer._sensor_params)
+    self.assertEqual(renderer._cached_image_size, (64, 64))
     renderer.close()
 
   def test_update_frame_appearance_in_place(self):
@@ -671,6 +713,46 @@ class GNMMeshRendererTest(parameterized.TestCase):
     self.assertEmpty(renderer._cached_bitmaps)
     self.assertEqual(renderer._mesh_keys, ())
     self.assertEqual(renderer._active_tiles, ())
+
+  def test_shared_sensor_across_renderers(self):
+    """Tests that alternating renderers share a sensor without stale cameras."""
+    self.enter_context(mock.patch.dict(gnm_mitsuba._SENSORS, clear=True))
+    renderer_a = gnm_mitsuba.GNMMeshRenderer.from_gnm(self.gnm_np, spp=1)
+    renderer_b = gnm_mitsuba.GNMMeshRenderer.from_gnm(self.gnm_np, spp=1)
+    camera_to_image_32 = np.array(
+        [
+            [60.0, 0.0, 16.0, 0.0],
+            [0.0, 60.0, 16.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    moved_world_to_camera = self.world_to_camera.copy()
+    moved_world_to_camera[0, 3] = 0.2
+    vertices = self.gnm_np.template_vertex_positions
+
+    first_a = renderer_a.render(
+        vertices=vertices,
+        world_to_camera=self.world_to_camera,
+        camera_to_image=camera_to_image_32,
+        image_size=(32, 32),
+    )
+    output_b = renderer_b.render(
+        vertices=vertices,
+        world_to_camera=moved_world_to_camera,
+        camera_to_image=camera_to_image_32,
+        image_size=(32, 32),
+    )
+    second_a = renderer_a.render(
+        vertices=vertices,
+        world_to_camera=self.world_to_camera,
+        camera_to_image=camera_to_image_32,
+        image_size=(32, 32),
+    )
+    self.assertIs(renderer_a._sensor, renderer_b._sensor)
+    self.assertFalse(np.array_equal(first_a.image, output_b.image))
+    np.testing.assert_array_equal(first_a.image, second_a.image)
 
 
 if __name__ == '__main__':
