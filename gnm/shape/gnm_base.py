@@ -128,3 +128,4 @@ class GNMBase(gnm_factory_mixins.GNMFactoryMethodsMixin, abc.ABC):
   def body_part(self) -> gnm_specs.GNMBodyPart:
     """Returns the body part of the GNM model."""
     return gnm_specs.GNM_VARIANT_TO_BODY_PART_MAP[self.variant]
+
