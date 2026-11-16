@@ -31,6 +31,7 @@ dependencies = [
     "importlib_resources",
     "ipywidgets",
     "jaxtyping",
+    "ml_dtypes",
     "notebook",
     "numpy",
     "opencv-python",
