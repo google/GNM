@@ -97,6 +97,11 @@ def _get_rng(rng: np.random.Generator | None) -> np.random.Generator:
   return rng if rng is not None else np.random.default_rng()
 
 
+def _decode(decoder: tf.keras.Model, *inputs: np.ndarray) -> np.ndarray:
+  """Evaluates a Keras decoder directly without `Model.predict` overhead."""
+  return np.asarray(decoder(list(inputs), training=False), dtype=np.float32)
+
+
 class ExpressionSampler:
   """Samples expressions and identities from a Conditional VAE."""
 
@@ -118,7 +123,9 @@ class ExpressionSampler:
       decoder_model_path = (
           _EXPRESSION_DECODER_PATH  # pyrefly: ignore[bad-assignment]
       )
-    self._decoder = tf.keras.models.load_model(str(decoder_model_path))
+    self._decoder = tf.keras.models.load_model(
+        str(decoder_model_path), compile=False
+    )
     self._expression_names = tuple(member.name.lower() for member in Expression)
     self._num_classes = self._decoder.inputs[1].shape[-1]
     self._latent_dim = self._decoder.inputs[0].shape[-1]
@@ -169,7 +176,7 @@ class ExpressionSampler:
         'float32'
     )
 
-    generated_vectors = self._decoder.predict([z_sample, class_one_hot])
+    generated_vectors = _decode(self._decoder, z_sample, class_one_hot)
     class_name = self._expression_names[class_label]
     if verbose:
       print(
@@ -230,8 +237,8 @@ class ExpressionSampler:
       blended_one_hot_label += class_one_hot * weight
 
     # Decode the blended latent vector and weighted average of one-hot labels
-    blended_expression = self._decoder.predict(
-        [blended_latent_vector, blended_one_hot_label]
+    blended_expression = _decode(
+        self._decoder, blended_latent_vector, blended_one_hot_label
     )
     if verbose:
       print(
@@ -263,9 +270,14 @@ class ExpressionSampler:
     Returns:
         Array of generated expression vectors.
     """
-    generated_vectors = []
+    latent_vectors = np.zeros(
+        (num_samples, self._latent_dim), dtype=np.float32
+    )
+    one_hot_labels = np.zeros(
+        (num_samples, self._num_classes), dtype=np.float32
+    )
     rng = _get_rng(rng)
-    for _ in range(num_samples):
+    for i in range(num_samples):
       # Pick 2 to 'max_num_categories' number of classes to blend
       num_classes_to_blend = rng.integers(
           2, min(max_num_categories, self._num_classes) + 1
@@ -277,13 +289,17 @@ class ExpressionSampler:
       )
 
       # Assign random weights
-      weights = {Expression(index): rng.random() for index in chosen_classes}
+      weights = rng.random(num_classes_to_blend)
+      weights = (weights / weights.sum()).astype(np.float32)
 
       # Blend
-      vec = self.blend_expressions(weights, rng=rng)
-      generated_vectors.append(vec)
+      z_samples = rng.normal(
+          size=(num_classes_to_blend, self._latent_dim)
+      ).astype(np.float32)
+      latent_vectors[i] = weights @ z_samples
+      one_hot_labels[i, chosen_classes] = weights
 
-    return np.array(generated_vectors)
+    return _decode(self._decoder, latent_vectors, one_hot_labels)
 
 
 def _create_combined_one_hot_labels(
@@ -354,7 +370,9 @@ class IdentitySampler:
       decoder_model_path = (
           _IDENTITY_DECODER_PATH  # pyrefly: ignore[bad-assignment]
       )
-    self._decoder = tf.keras.models.load_model(decoder_model_path)
+    self._decoder = tf.keras.models.load_model(
+        str(decoder_model_path), compile=False
+    )
 
     self._condition_dim = self._decoder.inputs[1].shape[-1]
     if verbose:
@@ -397,9 +415,7 @@ class IdentitySampler:
         'float32'
     )
 
-    generated_vectors = self._decoder.predict(
-        [z_sample, labels_for_decoder], verbose=0
-    )
+    generated_vectors = _decode(self._decoder, z_sample, labels_for_decoder)
     gender_name = self._GENDER_LABEL_MAP.get(
         gender_class, f'Unknown Gender {gender_class}'
     )
@@ -500,9 +516,7 @@ class IdentitySampler:
         'float32'
     )
 
-    blended_identities = self._decoder.predict(
-        [z_sample, labels_for_decoder], verbose=0
-    )
+    blended_identities = _decode(self._decoder, z_sample, labels_for_decoder)
     if verbose:
       print(
           f'Generated {num_samples} blended identity vectors from gender'
@@ -529,30 +543,23 @@ class IdentitySampler:
     Returns:
         An array of generated blended identity vectors.
     """
-    generated_blended_identities = []
-
     rng = _get_rng(rng)
-    for _ in range(num_samples):
-      # Generate random gender weights
-      gender_weights = {
-          Gender.FEMALE: rng.random(),
-          Gender.MALE: rng.random(),
-      }
+    # Generate random gender weights
+    gender_weights = rng.random((num_samples, self._NUM_GENDER_CLASSES))
+    gender_weights /= gender_weights.sum(axis=1, keepdims=True)
 
-      # Generate random ethnicity weights
-      ethnicity_weights = {
-          Ethnicity.MIDDLE_EASTERN: rng.random(),
-          Ethnicity.ASIAN: rng.random(),
-          Ethnicity.WHITE: rng.random(),
-          Ethnicity.BLACK: rng.random(),
-      }
+    # Generate random ethnicity weights
+    ethnicity_weights = rng.random((num_samples, self._NUM_ETHNICITIES_CLASSES))
+    ethnicity_weights /= ethnicity_weights.sum(axis=1, keepdims=True)
 
-      blended_identity = self.blend_identities(
-          gender_weights, ethnicity_weights, num_samples=1, rng=rng
-      )
-      generated_blended_identities.append(blended_identity[0])
+    labels_for_decoder = np.concatenate(
+        [gender_weights, ethnicity_weights], axis=1, dtype=np.float32
+    )
+    latent_vectors = rng.normal(
+        size=(num_samples, self._LATENT_DIM)
+    ).astype(np.float32)
 
-    return np.array(generated_blended_identities)
+    return _decode(self._decoder, latent_vectors, labels_for_decoder)
 
   def explain_classes(self) -> Mapping[str, Mapping[int, str]]:
     """Returns a dictionary mapping class indices to identity attributes.
