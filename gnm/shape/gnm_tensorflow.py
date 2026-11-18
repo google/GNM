@@ -41,6 +41,8 @@ from etils import enp
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
+import jaxtyping as jt
+
 import tensorflow as tf
 
 GNMVersion = gnm_specs.GNMVersion
@@ -53,7 +55,7 @@ GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
-class GNM(gnm_xnp.GNM):
+class GNM(gnm_xnp.GNM[tf.Tensor]):
   """TensorFlow batched implementation of the GNM parametric model.
 
   GNM is a mesh-generating function. Given identity, expression, joint
@@ -130,8 +132,8 @@ class GNM(gnm_xnp.GNM):
 
   def compute_vertex_normals(
       self,
-      vertices: tf.Tensor,
-  ) -> tf.Tensor:
+      vertices: jt.Float[tf.Tensor, '... V 3'],
+  ) -> jt.Float[tf.Tensor, '... V 3']:
     """Compute vertex normals for GNM mesh.
 
     Args:

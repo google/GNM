@@ -38,12 +38,10 @@ from absl import logging
 from etils import enp
 from gnm.shape import gnm_common
 from gnm.shape import gnm_landmarks
-from gnm.shape import gnm_typing
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
+import jaxtyping as jt
 import numpy as np
-
-enpt = gnm_typing.enpt
 
 GNMVersion = gnm_specs.GNMVersion
 GNMMajorVersion = gnm_specs.GNMMajorVersion
@@ -57,9 +55,9 @@ _rotation_matrix = gnm_common.axis_angle_to_rotation_matrix
 
 
 def compute_vertex_normals(
-    vertices: enpt.FloatArray['... V 3'],
-    triangles: enpt.IntArray['T 3'],
-) -> enpt.FloatArray['... V 3']:
+    vertices: jt.Float[np.ndarray, '... V 3'],
+    triangles: jt.Int[np.ndarray, 'T 3'],
+) -> jt.Float[np.ndarray, '... V 3']:
   """Computes area-weighted unit vertex normals for a triangle mesh.
 
   Note: Zero-magnitude normal warnings are checked only across vertices
@@ -111,7 +109,7 @@ def compute_vertex_normals(
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
-class GNM(gnm_xnp.GNM):
+class GNM(gnm_xnp.GNM[np.ndarray]):
   """NumPy implementation of the GNM parametric model.
 
   GNM is a mesh-generating function. Given identity, expression, joint
@@ -184,8 +182,8 @@ class GNM(gnm_xnp.GNM):
 
   def compute_vertex_normals(
       self,
-      vertices: enpt.FloatArray['... V 3'],
-  ) -> enpt.FloatArray['... V 3']:
+      vertices: jt.Float[np.ndarray, '... V 3'],
+  ) -> jt.Float[np.ndarray, '... V 3']:
     """Compute vertex normals for GNM mesh.
 
     Args:

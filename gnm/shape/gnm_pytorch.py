@@ -41,6 +41,7 @@ from etils import enp
 from gnm.shape import gnm_landmarks
 from gnm.shape import gnm_xnp
 from gnm.shape.data.versions import gnm_specs
+import jaxtyping as jt
 import torch
 
 GNMVersion = gnm_specs.GNMVersion
@@ -53,7 +54,7 @@ GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
-class GNM(gnm_xnp.GNM, torch.nn.Module):
+class GNM(gnm_xnp.GNM[torch.Tensor], torch.nn.Module):
   """PyTorch batched implementation of the GNM parametric face model.
 
   GNM is a mesh-generating function. Given identity, expression, joint
@@ -144,8 +145,8 @@ class GNM(gnm_xnp.GNM, torch.nn.Module):
 
   def compute_vertex_normals(
       self,
-      vertices: torch.Tensor,
-  ) -> torch.Tensor:
+      vertices: jt.Float[torch.Tensor, '... V 3'],
+  ) -> jt.Float[torch.Tensor, '... V 3']:
     """Compute vertex normals for GNM mesh.
 
     Args:

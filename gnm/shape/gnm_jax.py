@@ -58,7 +58,7 @@ GNMRemoteSource = gnm_specs.GNMRemoteSource
 
 
 @dataclasses.dataclass(frozen=False, kw_only=True, init=False)
-class GNM(gnm_xnp.GNM):
+class GNM(gnm_xnp.GNM[jnp.ndarray]):
   """JAX batched implementation of the GNM parametric model.
 
   GNM is a mesh-generating function. Given identity, expression, joint
