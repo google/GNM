@@ -727,6 +727,58 @@ def compute_pose_correctives[ArrayT: Any](
   )
 
 
+def transform_gnm_parameters[ArrayT: Any](
+    *,
+    root_rotation: jt.Float[ArrayT, '... 3'],
+    translation: jt.Float[ArrayT, '... 3'],
+    root_joint_bind_pose: jt.Float[ArrayT, '... 3'],
+    transform_rotation: jt.Float[ArrayT, '... 3 3'],
+    transform_translation: jt.Float[ArrayT, '... 3'],
+) -> tuple[jt.Float[ArrayT, '... 3'], jt.Float[ArrayT, '... 3']]:
+  """Transforms GNM root rotation and translation by a rigid transform.
+
+  Applies rigid transform `(transform_rotation, transform_translation)` around
+  the bind-pose root joint pivot `root_joint_bind_pose`:
+    R_root_new = transform_rotation @ axis_angle_to_rotation_matrix(
+        root_rotation
+    )
+    root_rotation_new = rotation_matrix_to_axis_angles(R_root_new)
+    translation_new = (
+        transform_rotation @ (translation + root_joint_bind_pose)
+        - root_joint_bind_pose
+        + transform_translation
+    )
+
+  Args:
+    root_rotation: Root joint axis-angle rotation vector. Shape: `(..., 3)`.
+    translation: Root joint translation vector. Shape: `(..., 3)`.
+    root_joint_bind_pose: Bind-pose position of the root joint. Shape: `(...,
+      3)`.
+    transform_rotation: Rigid transform 3x3 rotation matrix. Shape: `(..., 3,
+      3)`.
+    transform_translation: Rigid transform translation vector. Shape: `(...,
+      3)`.
+
+  Returns:
+    Tuple of `(root_rotation_new, translation_new)` with shape `(..., 3)` each.
+  """
+  xnp = enp.get_np_module(root_rotation)
+  root_rotation_matrix = axis_angle_to_rotation_matrix(root_rotation)
+  rotated_root_matrix = xnp.matmul(transform_rotation, root_rotation_matrix)
+  new_root_rotation = rotation_matrix_to_axis_angles(rotated_root_matrix)
+  shifted_translation = translation + root_joint_bind_pose
+  rotated_translation = xnp.einsum(
+      '...ij,...j->...i',
+      transform_rotation,
+      shifted_translation,
+      **_einsum_kwargs(xnp),
+  )
+  new_translation = (
+      rotated_translation - root_joint_bind_pose + transform_translation
+  )
+  return new_root_rotation, new_translation
+
+
 def _graph_shape[ArrayT: Any](
     array: jt.Float[ArrayT, '...'],
 ) -> tuple[int, ...]:
