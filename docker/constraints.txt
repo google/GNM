@@ -1,0 +1,14 @@
+# Direct numerical/test dependency versions reported in the Issue #1 validation.
+# This is a constraints file, not a complete transitive dependency lock.
+numpy==2.5.4
+scipy==1.18.1
+trimesh==5.2.2
+etils==1.15.0
+absl-py==2.5.1
+jaxtyping==0.3.11
+opt-einsum==3.4.0
+importlib-resources==7.1.0
+pytest==9.2.0
+jax==0.12.1
+jaxlib==0.12.1
+tensorflow==2.21.0

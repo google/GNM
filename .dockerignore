@@ -1,0 +1,20 @@
+# Allow only the source and build inputs into the Docker build context.
+**
+!Dockerfile
+!docker/
+!docker/constraints.txt
+!docker/require-cuda.sh
+!gnm/
+!gnm/shape/
+!gnm/shape/**
+!personalab/
+!personalab/**
+!tests/
+!tests/**
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/*.pyc
+**/*.npz
+**/*.zip
+**/*.patch

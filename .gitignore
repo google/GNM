@@ -1,1 +1,11 @@
 .idea
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+/datasets/
+/models/
+/outputs/
+/.gnm-cache/
+/neutral.obj
+/neutral.ply

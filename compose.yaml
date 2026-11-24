@@ -1,0 +1,32 @@
+x-personalab: &personalab-common
+  working_dir: /app
+  user: "${PERSONALAB_UID:-1000}:${PERSONALAB_GID:-1000}"
+  init: true
+  environment:
+    HOME: /tmp
+    GNM_CACHE_DIR: /cache/gnm
+  volumes:
+    - ./datasets:/app/datasets:ro
+    - ./models:/app/models:ro
+    - ./outputs:/app/outputs
+    - ./.gnm-cache:/cache/gnm
+
+services:
+  personalab:
+    <<: *personalab-common
+    image: personalab:cpu
+    build:
+      context: .
+      args:
+        TORCH_VARIANT: cpu
+
+  personalab-cuda:
+    <<: *personalab-common
+    profiles: [cuda]
+    image: personalab:cu128
+    build:
+      context: .
+      args:
+        TORCH_VARIANT: cu128
+    gpus: all
+    entrypoint: ["/usr/local/bin/require-cuda"]
