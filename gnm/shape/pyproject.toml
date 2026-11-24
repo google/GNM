@@ -82,5 +82,6 @@ package-dir = {"gnm.shape" = "."}
     "data/**/*.jpg",
     "data/**/*.md",
     "data/**/*.h5",
+    "data/landmarks/head_sparse_68.txt",
     "assets/**/*",
 ]

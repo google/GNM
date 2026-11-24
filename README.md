@@ -24,6 +24,11 @@ both non-commercial and commercial applications.
 
   - [2026-07-28]: Official [technical report](https://arxiv.org/abs/2607.23687) for the GNM Head released! 🚀🚀🚀
 
+## PersonaLab workflow
+
+Use the [GNM v3 mesh guide](docs/gnm-v3-mesh.md) to install the PyTorch backend,
+generate and export a head, and verify identity, expression, and pose controls.
+
 ## GNM Ecosystem Packages
 
 Here we list all the available GNM packages:
