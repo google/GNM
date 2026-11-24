@@ -156,9 +156,7 @@ class RotationMatrixToAxisAnglesTest(parameterized.TestCase):
   @parameterized.named_parameters(*_XNP_BACKENDS)
   def test_identity_returns_zero(self, xnp: enp.NpModule):
     matrix = xnp.asarray(np.eye(3), dtype=xnp.float32)
-    axis_angle = np.asarray(
-        gnm_common.rotation_matrix_to_axis_angles(matrix)
-    )
+    axis_angle = np.asarray(gnm_common.rotation_matrix_to_axis_angles(matrix))
     np.testing.assert_allclose(axis_angle, np.zeros(3), atol=1e-5)
 
   @parameterized.named_parameters(*_XNP_BACKENDS)
@@ -167,9 +165,7 @@ class RotationMatrixToAxisAnglesTest(parameterized.TestCase):
         [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
         dtype=xnp.float32,
     )
-    axis_angle = np.asarray(
-        gnm_common.rotation_matrix_to_axis_angles(matrix)
-    )
+    axis_angle = np.asarray(gnm_common.rotation_matrix_to_axis_angles(matrix))
     expected = np.array([0.0, 0.0, np.pi / 2], dtype=np.float32)
     np.testing.assert_allclose(axis_angle, expected, atol=1e-5)
 
@@ -196,9 +192,7 @@ class RotationMatrixToAxisAnglesTest(parameterized.TestCase):
         gnm_common.rotation_matrix_to_axis_angles(matrices)
     )
 
-    np.testing.assert_allclose(
-        recovered_axis_angle, axis_angle_np, atol=1e-5
-    )
+    np.testing.assert_allclose(recovered_axis_angle, axis_angle_np, atol=1e-5)
 
     recovered_matrices = np.asarray(
         gnm_common.axis_angle_to_rotation_matrix(
@@ -686,6 +680,127 @@ class ApplyLinearBasisTest(parameterized.TestCase):
     result = gnm_common._apply_linear_basis(params, basis, np)
     np.testing.assert_allclose(result, expected)
     self.assertEqual(result.shape, (2, 3, 4, 3))
+
+
+class TransformGnmParametersTest(parameterized.TestCase):
+  """Tests for transform_gnm_parameters."""
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_identity_transform_preserves_parameters(self, xnp: enp.NpModule):
+    root_rotation = xnp.asarray([0.2, -0.3, 0.4], dtype=xnp.float32)
+    translation = xnp.asarray([1.0, -2.0, 3.0], dtype=xnp.float32)
+    root_joint_bind_pose = xnp.asarray([0.5, 0.25, -0.75], dtype=xnp.float32)
+    transform_rotation = xnp.asarray(np.eye(3), dtype=xnp.float32)
+    transform_translation = xnp.asarray([0.0, 0.0, 0.0], dtype=xnp.float32)
+
+    new_root_rotation, new_translation = gnm_common.transform_gnm_parameters(
+        root_rotation=root_rotation,
+        translation=translation,
+        root_joint_bind_pose=root_joint_bind_pose,
+        transform_rotation=transform_rotation,
+        transform_translation=transform_translation,
+    )
+    np.testing.assert_allclose(
+        np.asarray(new_root_rotation), np.asarray(root_rotation), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(new_translation), np.asarray(translation), atol=1e-5
+    )
+
+  @parameterized.named_parameters(*_XNP_BACKENDS)
+  def test_rigid_transform_with_nonzero_pivot_matches_lbs(
+      self, xnp: enp.NpModule
+  ):
+    root_rotation = xnp.asarray([0.1, -0.2, 0.3], dtype=xnp.float32)
+    translation = xnp.asarray([0.4, -0.5, 0.6], dtype=xnp.float32)
+    root_joint_bind_pose = xnp.asarray([0.2, 1.1, -0.3], dtype=xnp.float32)
+    transform_axis_angle = xnp.asarray([0.3, 0.5, -0.4], dtype=xnp.float32)
+    transform_rotation = gnm_common.axis_angle_to_rotation_matrix(
+        transform_axis_angle
+    )
+    transform_translation = xnp.asarray([-1.5, 2.0, 0.75], dtype=xnp.float32)
+
+    new_root_rotation, new_translation = gnm_common.transform_gnm_parameters(
+        root_rotation=root_rotation,
+        translation=translation,
+        root_joint_bind_pose=root_joint_bind_pose,
+        transform_rotation=transform_rotation,
+        transform_translation=transform_translation,
+    )
+
+    # Verify geometric equivalence using single-joint LBS.
+    vertices = xnp.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.5, -0.25], [-0.5, 1.2, 0.8]],
+        dtype=xnp.float32,
+    )
+    joints = root_joint_bind_pose[None, :]
+    weights = xnp.asarray([[1.0, 1.0, 1.0]], dtype=xnp.float32)
+    parents = [0]
+
+    posed_original = gnm_common.linear_blend_skinning(
+        vertices, joints, root_rotation[None, :], translation, weights, parents
+    )
+    posed_expected = (
+        xnp.einsum('ij,vj->vi', transform_rotation, posed_original)
+        + transform_translation
+    )
+    posed_transformed = gnm_common.linear_blend_skinning(
+        vertices,
+        joints,
+        new_root_rotation[None, :],
+        new_translation,
+        weights,
+        parents,
+    )
+    np.testing.assert_allclose(
+        np.asarray(posed_transformed), np.asarray(posed_expected), atol=1e-5
+    )
+
+  def test_batched_numpy_and_jax_parity(self):
+    rng = np.random.default_rng(42)
+    batch_shape = (2, 4)
+    root_rotation_np = rng.uniform(-0.8, 0.8, size=(*batch_shape, 3)).astype(
+        np.float32
+    )
+    translation_np = rng.normal(size=(*batch_shape, 3)).astype(np.float32)
+    root_joint_bind_pose_np = rng.normal(size=(*batch_shape, 3)).astype(
+        np.float32
+    )
+    transform_axis_angle_np = rng.uniform(
+        -0.8, 0.8, size=(*batch_shape, 3)
+    ).astype(np.float32)
+    transform_rotation_np = gnm_common.axis_angle_to_rotation_matrix(
+        transform_axis_angle_np
+    )
+    transform_translation_np = rng.normal(size=(*batch_shape, 3)).astype(
+        np.float32
+    )
+
+    new_rot_np, new_trans_np = gnm_common.transform_gnm_parameters(
+        root_rotation=root_rotation_np,
+        translation=translation_np,
+        root_joint_bind_pose=root_joint_bind_pose_np,
+        transform_rotation=transform_rotation_np,
+        transform_translation=transform_translation_np,
+    )
+
+    jnp = enp.lazy.jnp
+    new_rot_jax, new_trans_jax = gnm_common.transform_gnm_parameters(
+        root_rotation=jnp.asarray(root_rotation_np),
+        translation=jnp.asarray(translation_np),
+        root_joint_bind_pose=jnp.asarray(root_joint_bind_pose_np),
+        transform_rotation=jnp.asarray(transform_rotation_np),
+        transform_translation=jnp.asarray(transform_translation_np),
+    )
+
+    self.assertEqual(new_rot_np.shape, (*batch_shape, 3))
+    self.assertEqual(new_trans_np.shape, (*batch_shape, 3))
+    self.assertEqual(tuple(new_rot_jax.shape), (*batch_shape, 3))
+    self.assertEqual(tuple(new_trans_jax.shape), (*batch_shape, 3))
+    np.testing.assert_allclose(np.asarray(new_rot_jax), new_rot_np, atol=1e-5)
+    np.testing.assert_allclose(
+        np.asarray(new_trans_jax), new_trans_np, atol=1e-5
+    )
 
 
 if __name__ == '__main__':
