@@ -35,7 +35,7 @@ mkdir -p datasets models outputs .gnm-cache
 export PERSONALAB_UID=$(id -u) PERSONALAB_GID=$(id -g)
 docker compose build personalab
 docker compose run --rm personalab python -m personalab.gnm_mesh --output outputs/neutral.obj
-docker compose run --rm personalab python -m pytest -v -p no:cacheprovider tests
+docker compose run --rm personalab python -m pytest -v tests
 ```
 
 The official GNM model is downloaded by GNM on first use and cached in
@@ -43,7 +43,9 @@ The official GNM model is downloaded by GNM on first use and cached in
 pass `--model-file models/gnm_head.npz`. For the tests, pass
 `-e PERSONALAB_GNM_MODEL_FILE=/app/models/gnm_head.npz` to `docker compose run`.
 The datasets and local models are mounted read-only; cache and outputs are
-persistent and writable. Rebuild the image after source or dependency changes.
+persistent and writable. Pytest stores its cache in `.gnm-cache/.pytest_cache/`
+using the same unprivileged container UID/GID. Rebuild the image after source
+or dependency changes.
 
 The Issue #1 validation used GNM v3.0 Head from Hugging Face repository
 `google/gnm-v3`, revision `c01e90d298d82301f9fd18f54806be751775cb7c`, file
