@@ -21,6 +21,9 @@ name = "gnm-shape"
 version = "3.0.0"
 description = "GNM Shape Library"
 readme = "README.md"
+# When raising `requires-python` to 3.13+ or 3.14+, update or remove the
+# `sys.version_info` guards in `shape/parameters/gnm_batched.py` and
+# `shape/parameters/gnm_batched_test.py`.
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
