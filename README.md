@@ -32,6 +32,66 @@ Here we list all the available GNM packages:
 | :---: | :--- | :---: | :---: |
 | **[GNM Head](gnm/shape/README.md)**  | Parametric 3D statistical human head and face geometry model providing fine-grained, disentangled control over identity, expressions, and head pose. The model contains controllable internal anatomy including eyeballs, teeth and tongue. Includes multi-framework backend support for **NumPy**, **JAX**, **PyTorch**, and **TensorFlow**, along with semantic parameter sampling. <br><br>*Technical report*: [GNM Head: A Generative aNthropometric Model of the human head](https://arxiv.org/abs/2607.23687) | [![CI Linux](https://github.com/google/gnm/actions/workflows/ci-shape-linux.yml/badge.svg)](https://github.com/google/gnm/actions/workflows/ci-shape-linux.yml)<br>[![CI macOS](https://github.com/google/gnm/actions/workflows/ci-shape-macos.yml/badge.svg)](https://github.com/google/gnm/actions/workflows/ci-shape-macos.yml)<br>[![CI Windows](https://github.com/google/gnm/actions/workflows/ci-shape-windows.yml/badge.svg)](https://github.com/google/gnm/actions/workflows/ci-shape-windows.yml)<br>[![Lint](https://github.com/google/gnm/actions/workflows/lint.yml/badge.svg)](https://github.com/google/gnm/actions/workflows/lint.yml) | ![GNM Head Teaser](gnm/shape/assets/readme/teaser_heads_cropped.gif) ![GNM Head demo teaser](gnm/shape/assets/readme/gnm_head_demo.gif)
 
+## Repository Structure
+
+```text
+gnm/
+├── gnm/
+│   └── shape/              # GNM Shape parametric 3D human model library
+├── assets/readme/          # Ecosystem documentation assets
+├── CONTRIBUTING.md         # Contribution guidelines
+├── LICENSE                 # Apache 2.0 license
+├── pyproject.toml          # Root package build & optional dependency configuration
+└── README.md               # Ecosystem overview & installation guide
+```
+
+## Installation
+
+### 1. Prerequisites
+
+GNM is tested with **Python 3.13**. Before installing,
+create and activate a clean virtual environment using your preferred tool
+(e.g. mamba/conda, venv, uv, etc.):
+
+```bash
+mamba create -n gnm python=3.13
+mamba activate gnm
+```
+
+### 2. Install GNM
+
+Clone the repository and install the package using `pip` into your active
+environment. You can install only the backend frameworks you need:
+
+```bash
+git clone https://github.com/google/gnm.git
+cd gnm
+```
+
+*   **Core (NumPy + TensorFlow only):**
+
+    ```bash
+    pip install -e .
+    ```
+
+*   **With JAX support:**
+
+    ```bash
+    pip install -e ".[jax]"
+    ```
+
+*   **With PyTorch support:**
+
+    ```bash
+    pip install -e ".[pytorch]"
+    ```
+
+*   **All supported frameworks and development tools:**
+
+    ```bash
+    pip install -e ".[all,dev]"
+    ```
+
 ## Citation
 If you use any part of the GNM Ecosystem in your work, please consider citing
 the corresponding package. Relevant bibtex entries are listed below as well as

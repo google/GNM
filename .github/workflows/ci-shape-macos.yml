@@ -5,13 +5,13 @@ on:
     branches: [main, master]
     paths:
       - 'gnm/shape/**'
-      - 'copy.bara.sky'
+      - 'pyproject.toml'
       - '.github/workflows/**'
   pull_request:
     branches: [main, master]
     paths:
       - 'gnm/shape/**'
-      - 'copy.bara.sky'
+      - 'pyproject.toml'
       - '.github/workflows/**'
   schedule:
     # Run weekly on Sundays at 00:00 UTC to catch regressions caused by upstream dependency updates
