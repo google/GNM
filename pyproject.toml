@@ -66,6 +66,7 @@ dev = [
 
 [tool.setuptools]
 packages = [
+    "gnm",
     "gnm.shape",
     "gnm.shape.data",
     "gnm.shape.data.versions",

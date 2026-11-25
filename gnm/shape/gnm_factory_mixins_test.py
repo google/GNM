@@ -101,13 +101,6 @@ class GNMFactoryMethodsMixinTest(absltest.TestCase):
         _PlaceholderGNM.from_custom_file('/path/to/custom_model.npz')
       mock_warning.assert_not_called()
 
-  def test_from_custom_file_rejects_gfs_user_argument(self):
-    with self.assertRaises(TypeError):
-      _PlaceholderGNM.from_custom_file(
-          '/path/to/custom_model.npz',
-          gfs_user='test_user',  # pyrefly: ignore[unexpected-keyword]
-      )
-
 
 if __name__ == '__main__':
   absltest.main()

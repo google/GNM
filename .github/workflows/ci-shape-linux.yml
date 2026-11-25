@@ -4,12 +4,14 @@ on:
   push:
     branches: [main, master]
     paths:
+      - 'gnm/gnm_specs.py'
       - 'gnm/shape/**'
       - 'pyproject.toml'
       - '.github/workflows/**'
   pull_request:
     branches: [main, master]
     paths:
+      - 'gnm/gnm_specs.py'
       - 'gnm/shape/**'
       - 'pyproject.toml'
       - '.github/workflows/**'
