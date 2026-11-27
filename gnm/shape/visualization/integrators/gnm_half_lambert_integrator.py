@@ -153,7 +153,7 @@ class GnmHalfLambertIntegrator(mi.SamplingIntegrator):
   def _shade_half_lambert(
       self,
       scene_intersection: mi.SurfaceInteraction3f,
-      diffuse_reflectance: mi.Color3f | mi.Spectrum,
+      diffuse_reflectance: mi.UnpolarizedSpectrum,
   ) -> mi.Color3f:
     """Computes reflected radiance using the GNM half-Lambert shading model.
 
