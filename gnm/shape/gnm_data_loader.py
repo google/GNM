@@ -18,6 +18,7 @@ import io
 from typing import Any
 
 from etils import epath
+from gnm.shape import gnm_shape_specs_utils
 from gnm.shape.data.versions import gnm_models_catalog
 from gnm.shape.data.versions import gnm_specs
 import numpy as np
@@ -35,17 +36,14 @@ def major_to_newest_full_version(
     major: gnm_specs.GNMMajorVersion,
 ) -> gnm_specs.GNMVersion:
   """Returns the newest GNMVersion for a given GNMMajorVersion."""
-  minors = [
-      e for e in gnm_specs.GNMVersion if e.value.split('.')[0] == major.value
-  ]
-  return sorted(minors, key=lambda e: int(e.value.split('.')[1]))[-1]
+  return gnm_shape_specs_utils.major_to_newest_full_version(major)
 
 
 def full_version_to_major(
     version: gnm_specs.GNMVersion,
 ) -> gnm_specs.GNMMajorVersion:
   """Returns the major version of a GNMVersion."""
-  return gnm_specs.GNMMajorVersion(version.value.split('.')[0])
+  return gnm_shape_specs_utils.full_version_to_major(version)
 
 
 def _get_version_dir_name(version: gnm_specs.GNMMajorVersion) -> str:
